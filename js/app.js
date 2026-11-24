@@ -79,7 +79,8 @@
     const rejected = values().filter(line => line.rejected).length;
     const legacyPending = config.url && Object.values(sessions).some(session => session.pending && !session.status);
     $('rejected-backup').hidden = !rejected && !legacyPending;
-    $('queue').textContent = config.url ? '待上傳 '+dirty+' 筆' : '未設定雲端，僅存本機';
+    if (config.url) $('queue').textContent = '待上傳 '+dirty+' 筆';
+    else replace($('queue'),node('span','未設定雲端，','queue-local-prefix'),'僅存本機');
     $('sync-status').textContent = config.url ? [
       !navigator.onLine ? '離線中' : '', lastSync ? '上次同步 '+clock(lastSync) : '',
       [...masters.values()].some(master => master.pending) ? '主檔待上傳' : '',
@@ -318,8 +319,10 @@
       else tab.removeAttribute('aria-current');
     }
     if (next === 'scan') {
+      manualExpanded = false;
+      showManual();
       renderScan();
-      if (window.matchMedia('(pointer:fine)').matches) $('barcode').focus();
+      if (window.matchMedia('(pointer:fine)').matches) $('barcode').focus({preventScroll:true});
     }
     if (next === 'summary') { showMaster(); renderSummary(); }
     if (next === 'settings') renderSettings();
@@ -608,7 +611,7 @@
     if (count && active && !ending) countScan(product ? product.barcode : barcode,product,qty);
     renderScan();
     refreshPause();
-    $('barcode').focus();
+    $('barcode').focus({preventScroll:true});
   }
   function update(line,qty) {
     const current = lines.get(line.id);
@@ -680,6 +683,7 @@
     replace($('lines'),...rows);
     const last = lines.get(lastId);
     $('last-scan').hidden = !unknownScan && (!last || last.deleted);
+    $('scan-placeholder').hidden = !$('last-scan').hidden;
     $('last-controls').hidden = !!unknownScan;
     if (unknownScan) {
       $('last-scan').classList.add('last-unknown');
@@ -699,8 +703,9 @@
     if (remote) {
       total += remote.items.filter(item => matches(item.barcode))
         .reduce((qty,item) => qty+item.countedQty-item.mineQty,0);
-      counts.push(['全場已盤',total]);
     }
+    if (remote) counts.push(['全場已盤',total]);
+    else if (compare) counts.push(['全場已盤','—','compact-metric']);
     if (compare) {
       const diff = product ? total-product.bookQty : null;
       counts.push(['帳面',product ? product.bookQty : '—'],['差異',diff === null ? '—' :
@@ -823,7 +828,31 @@
     else showMaster();
     return true;
   }
+  const viewport = window.visualViewport;
+  function keepQtyVisible() {
+    if (!qtyEdit || !document.body.classList.contains('scan-compact')) return;
+    const top = viewport ? viewport.offsetTop : 0;
+    const bottom = top + (viewport ? viewport.height : window.innerHeight);
+    const controls = $('last-controls');
+    const box = controls.getBoundingClientRect();
+    if (box.top < top || box.bottom > bottom) {
+      const target = box.height <= bottom-top ? controls : $('confirm-qty');
+      target.scrollIntoView({block:'nearest'});
+    }
+  }
+  function updateViewport() {
+    document.body.style.setProperty('--vvh',viewport.height+'px');
+    document.body.style.setProperty('--vv-top',viewport.offsetTop+'px');
+    document.body.classList.toggle('keyboard-open',viewport.height < window.innerHeight-100);
+    keepQtyVisible();
+  }
+  if (viewport) {
+    viewport.addEventListener('resize',updateViewport);
+    viewport.addEventListener('scroll',updateViewport);
+    updateViewport();
+  }
   const scanner = window.InvScanner.create($('video'),handleScan,(running,torch,error) => {
+    document.body.classList.toggle('scan-compact',running && view === 'scan');
     $('camera').textContent = running ? '停止' : '開啟鏡頭';
     $('preview').hidden = !running;
     $('camera-preview').hidden = !running && !qtyEdit;
@@ -898,19 +927,35 @@
     } catch (error) { toast(error.message); }
   };
   $('start-form').onsubmit = begin;
-  $('scan-form').onsubmit = async event => {
+  const manualToggle = $('manual-toggle');
+  const manualForm = $('scan-form');
+  let manualExpanded = false;
+  function showManual() {
+    manualToggle.setAttribute('aria-expanded',String(manualExpanded || manualForm.contains(document.activeElement)));
+  }
+  manualToggle.onclick = () => {
+    manualExpanded = manualToggle.getAttribute('aria-expanded') === 'false';
+    if (!manualExpanded) manualToggle.focus({preventScroll:true});
+    showManual();
+  };
+  manualForm.addEventListener('focusin',showManual);
+  manualForm.addEventListener('focusout',event => {
+    if (!manualForm.contains(event.relatedTarget)) manualToggle.setAttribute('aria-expanded',String(manualExpanded));
+  });
+  manualForm.onsubmit = async event => {
     event.preventDefault();
     if (unknownScan) return;
     unlockAudio();
     const code = $('barcode').value;
     $('barcode').value = '';
-    $('barcode').focus();
+    $('barcode').focus({preventScroll:true});
     await handleScan(code,'manual');
   };
   $('last-qty').onfocus = event => {
     qtyEdit = qtyEdit || lastId;
     refreshPause();
     event.target.select();
+    if (document.body.classList.contains('scan-compact')) setTimeout(keepQtyVisible,300);
   };
   $('last-qty').onblur = event => {
     if (event.relatedTarget !== $('confirm-qty')) finishQty();
@@ -919,13 +964,13 @@
     if (event.key === 'Enter') {
       event.preventDefault();
       finishQty();
-      $('barcode').focus();
+      $('barcode').focus({preventScroll:true});
     }
   };
   $('confirm-qty').onmousedown = event => event.preventDefault();
   $('confirm-qty').onclick = () => {
     finishQty();
-    $('barcode').focus();
+    $('barcode').focus({preventScroll:true});
   };
   $('confirm-qty').onblur = event => {
     if (event.relatedTarget !== $('last-qty')) finishQty();

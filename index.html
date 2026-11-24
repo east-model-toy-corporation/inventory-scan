@@ -16,21 +16,23 @@
   <script defer src="./js/app.js"></script>
 </head>
 <body>
-  <header class="app-header">
-    <div class="wrap">
-      <div class="heading"><h1>條碼盤點</h1><span id="queue" class="badge" role="status"></span></div>
-      <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="end-session" type="button" hidden>結束盤點</button><button id="switch" type="button" hidden>切換</button></div>
-      <button id="rejected-backup" type="button" hidden>匯出本機備份</button><small id="sync-status"></small>
-    </div>
-  </header>
-  <nav class="tabs" aria-label="頁面">
-    <div class="wrap">
-      <button data-view="start" aria-current="page">設定開始</button>
-      <button data-view="scan">刷讀</button>
-      <button data-view="summary">彙總</button>
-      <button data-view="settings">設定</button>
-    </div>
-  </nav>
+  <div class="app-chrome">
+    <header class="app-header">
+      <div class="wrap">
+        <div class="heading"><h1>條碼盤點</h1><span id="queue" class="badge" role="status"></span></div>
+        <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="end-session" type="button" hidden>結束盤點</button><button id="switch" type="button" hidden>切換</button></div>
+        <button id="rejected-backup" type="button" hidden>匯出本機備份</button><small id="sync-status"></small>
+      </div>
+    </header>
+    <nav class="tabs" aria-label="頁面">
+      <div class="wrap">
+        <button data-view="start" aria-current="page">設定開始</button>
+        <button data-view="scan">刷讀</button>
+        <button data-view="summary">彙總</button>
+        <button data-view="settings">設定</button>
+      </div>
+    </nav>
+  </div>
   <main class="wrap">
     <section id="start">
       <h2>設定開始</h2>
@@ -70,7 +72,7 @@
           <div id="preview" hidden><video id="video" playsinline muted autoplay></video><div class="guide"></div></div>
           <div id="scan-paused" role="status" hidden>⏸ 辨識暫停中・改完按「確定，繼續掃描」</div>
         </div>
-        <div class="actions">
+        <div class="actions camera-actions">
           <button id="camera">開啟鏡頭</button>
           <button id="flip">切換前後鏡頭</button>
           <button id="torch" aria-pressed="false" hidden>手電筒</button>
@@ -78,6 +80,7 @@
         <small id="camera-note" role="status"></small>
         <small id="ios-note" hidden>請用 Safari 開啟。若從 LINE 內建瀏覽器開啟，請改用 Safari。</small>
       </div>
+      <div id="scan-placeholder" class="panel last" hidden>對準條碼開始掃描</div>
       <div id="last-scan" class="panel last" hidden>
         <div id="last-details" aria-live="polite"></div>
         <div id="last-controls">
@@ -94,7 +97,8 @@
           <button id="confirm-qty" type="button" class="primary" hidden>確定，繼續掃描</button>
         </div>
       </div>
-      <div class="panel stack">
+      <div class="panel stack" id="manual-panel">
+        <button id="manual-toggle" type="button" aria-controls="scan-form" aria-expanded="false">⌨ 手動輸入</button>
         <form id="scan-form" class="manual">
           <label>條碼<input id="barcode" type="text" inputmode="numeric" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
           <label>數量<input id="qty" type="number" inputmode="numeric" min="1" max="999999" step="1" value="1" required></label>

@@ -15,6 +15,7 @@
 [hidden] { display:none !important }
 body { margin:0 }
 .wrap { max-width:760px; margin:auto; padding-inline:16px }
+.app-chrome { display:contents }
 .app-header { background:var(--dark); color:#fff; padding:16px 0 12px }
 .heading,.session-bar,.actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap }
 .heading,.session-bar { justify-content:space-between }
@@ -103,9 +104,76 @@ th { background:#edf4f0 }
 .quick-qty { display:flex; gap:8px; margin-top:8px }
 .quick-qty button { flex:1; font-weight:700 }
 #confirm-qty { width:100%; min-height:52px; margin-top:12px; font-weight:800 }
-#unknown-overlay { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:16px; background:#152b2770 }
-#unknown-dialog { width:min(100%,440px); max-height:85vh; overflow:auto; background:#fff; border-radius:14px; padding:16px }
-#unknown-title { margin:-16px -16px 12px; padding:14px 16px; background:var(--red); color:#fff }
-#unknown-scan { overflow-wrap:anywhere; font-weight:700 }
+
+/* Compact scan view */
+#manual-toggle { display:none }
+body:not(.scan-compact) #scan-placeholder,body:not(.scan-compact) .compact-metric { display:none }
+.scan-compact { --compact-row-height:36px }
+.scan-compact .app-chrome { display:block; position:sticky; top:0; z-index:5 }
+.scan-compact .app-header { padding:0 }
+.scan-compact .app-header .wrap { display:flex; align-items:center; gap:6px; height:var(--compact-row-height); padding-inline:8px }
+.scan-compact .app-header .heading,.scan-compact .session-bar { display:contents }
+.scan-compact h1 { font-size:.875rem; white-space:nowrap }
+.scan-compact #identity { order:1; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.75rem }
+.scan-compact .badge { order:2; max-width:32%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:3px 5px; font-size:.7rem }
+.scan-compact .app-header button { order:3; min-height:30px; padding:2px 4px; font-size:.75rem; white-space:nowrap }
+.scan-compact #rejected-backup { color:var(--ink) }
+.scan-compact .queue-local-prefix,.scan-compact #sync-status,.scan-compact #scan > h2 { display:none }
+.scan-compact .tabs { position:static }
+.scan-compact .tabs button { height:var(--compact-row-height); min-height:0; padding-block:0; font-size:.875rem }
+.scan-compact main.wrap { padding:0 8px calc(24px + env(safe-area-inset-bottom)) }
+.scan-compact #camera-panel { position:sticky; top:calc(2 * var(--compact-row-height) + 1px); z-index:4; padding:0; margin-bottom:4px; border:0; gap:0 }
+.scan-compact #camera-panel #preview { height:38vh; height:38svh; min-height:180px; aspect-ratio:auto }
+.scan-compact .guide { inset:25% max(7.5%,calc(50% - 29svh)) }
+.scan-compact #scan-paused { padding:4px; font-size:.8rem }
+.scan-compact #ios-note { display:none }
+.scan-compact .camera-actions { position:absolute; top:6px; right:6px; z-index:1; gap:4px }
+.scan-compact .camera-actions button { min-height:34px; padding:3px 7px; font-size:.8rem; background:#10352fcb; border-color:#ffffff80; color:#fff }
+
+.scan-compact #scan-placeholder,.scan-compact #last-scan { min-height:150px; padding:6px 8px; margin-bottom:4px }
+.scan-compact #scan-placeholder { display:grid; place-items:center; font-weight:700; color:var(--muted) }
+.scan-compact #last-details { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 6px }
+.scan-compact #last-details h3,.scan-compact #last-details p { margin:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis }
+.scan-compact #last-details h3 { flex:1; min-width:0; font-size:.95rem }
+.scan-compact #last-details p { max-width:55%; font-size:.75rem }
+.scan-compact #last-details .metrics { flex:0 0 100%; flex-wrap:nowrap; gap:3px 8px; overflow-x:auto }
+.scan-compact #last-details .metrics span { font-size:.75rem; white-space:nowrap }
+.scan-compact #last-details .metrics b { display:inline; margin-inline-start:3px; font-size:inherit }
+.scan-compact .last-qty,.scan-compact .quick-qty,.scan-compact #confirm-qty { margin-top:4px }
+.scan-compact .last-qty button,.scan-compact .last-qty input { min-height:44px; height:44px; padding:0 6px; font-size:1.4rem }
+.scan-compact #confirm-qty { min-height:44px; scroll-margin-block:6px }
+.scan-compact #last-controls { scroll-margin-block:6px }
+
+.scan-compact #manual-panel { position:relative; padding:4px 8px }
+.scan-compact #manual-toggle { display:block; justify-self:start; min-height:34px; padding:3px 8px; font-size:.85rem }
+.scan-compact #manual-toggle[aria-expanded="false"] + .manual:not(:focus-within) {
+  position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%);
+}
+@media (pointer:fine) and (min-width:768px) {
+  .scan-compact #manual-toggle { display:none }
+  .scan-compact #manual-toggle[aria-expanded="false"] + .manual:not(:focus-within) {
+    position:static; width:auto; height:auto; overflow:visible; clip-path:none;
+  }
+}
+.scan-compact.keyboard-open #camera-panel { position:relative; top:auto }
+.scan-compact.keyboard-open .app-chrome { position:relative }
+
+#unknown-overlay {
+  position:fixed; inset:var(--vv-top,0px) 0 auto; z-index:20;
+  display:grid; place-items:center; height:100vh; height:100svh;
+  height:var(--vvh,100svh); padding:12px; background:#152b2770;
+}
+#unknown-dialog {
+  width:min(100%,440px); display:flex; flex-direction:column; max-height:calc(100vh - 24px);
+  max-height:calc(100svh - 24px); max-height:calc(var(--vvh,100svh) - 24px);
+  overflow:hidden; background:#fff; border-radius:14px; padding:12px;
+}
+#unknown-title { margin:-12px -12px 8px; padding:8px 12px; font-size:1.15rem; background:var(--red); color:#fff }
+#unknown-scan { margin-bottom:8px; font-size:.875rem; overflow-wrap:anywhere; font-weight:700 }
+#unknown-choices,#unknown-search { gap:6px }
+#unknown-search { display:flex; flex-direction:column; min-height:0 }
+#unknown-search > :not(#master-results) { flex:none }
+#master-results { min-height:0; overflow:auto; overscroll-behavior:contain; gap:6px; padding:3px }
+#master-results p { margin:0 }
 #back-to-choices,.master-result { text-align:left }
 .master-result { display:grid; gap:4px; padding:8px 12px; overflow-wrap:anywhere }
