@@ -12,8 +12,8 @@
     try {
       let response;
       try { response = await fetch(url,options); }
-      catch (error) { throw new Error(error.name === 'AbortError' ? '連線逾時' : '無法連線至試算表'); }
-      if (!response.ok) throw new Error('雲端連線失敗（'+response.status+'）');
+      catch (error) { throw Object.assign(new Error(error.name === 'AbortError' ? '連線逾時' : '無法連線至試算表'),{unavailable:true}); }
+      if (!response.ok) throw Object.assign(new Error('雲端連線失敗（'+response.status+'）'),{unavailable:response.status >= 500});
       let result;
       try { result = await response.json(); }
       catch (_) { throw new Error('試算表回應格式錯誤'); }

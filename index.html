@@ -19,8 +19,8 @@
   <header class="app-header">
     <div class="wrap">
       <div class="heading"><h1>條碼盤點</h1><span id="queue" class="badge" role="status"></span></div>
-      <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="switch" type="button" hidden>切換</button></div>
-      <small id="sync-status"></small>
+      <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="end-session" type="button" hidden>結束盤點</button><button id="switch" type="button" hidden>切換</button></div>
+      <button id="rejected-backup" type="button" hidden>匯出本機備份</button><small id="sync-status"></small>
     </div>
   </header>
   <nav class="tabs" aria-label="頁面">
@@ -48,11 +48,6 @@
         </fieldset>
         <fieldset class="panel stack">
           <legend>盤點場次</legend>
-          <label class="choice"><input type="radio" name="session-type" value="new" checked>建立新場次</label>
-          <label class="choice"><input type="radio" name="session-type" value="join">加入既有場次</label>
-          <label>場次代碼<input id="code" required maxlength="60" spellcheck="false" autocapitalize="characters"></label>
-          <label id="name-field">場次名稱（選填）<input id="session-name" maxlength="100"></label>
-          <button id="lookup" type="button" hidden>查詢場次</button>
           <small id="session-info" role="status"></small>
         </fieldset>
         <fieldset class="panel stack">
@@ -95,6 +90,7 @@
     </section>
     <section id="summary" hidden>
       <div class="heading"><h2>彙總</h2><button id="refresh">重新整理</button></div>
+      <p id="summary-session"></p>
       <div id="session-master-actions" hidden>
         <button id="reload-master" type="button">重新載入場次主檔</button>
         <button id="send-master" type="button">重新上傳主檔到此場次</button>

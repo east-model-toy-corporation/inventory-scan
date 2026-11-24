@@ -7,10 +7,13 @@
     Array.from({length}, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
   const pad = value => String(value).padStart(2,'0');
   const dateParts = date => [date.getFullYear(),pad(date.getMonth()+1),pad(date.getDate()),pad(date.getHours()),pad(date.getMinutes())];
+  const taipeiDate = date => new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(date);
+  const sessionName = session => session.name || (session.createdAt ?
+    session.store+' '+taipeiDate(new Date(session.createdAt)) : session.store);
   function sessionCode(store, date = new Date()) {
-    const initials = {'萬年總店':'WN','華山':'HS','夢時代':'DM','武昌':'WC','大江':'DJ'};
+    const initials = new Map([['萬年總店','WN'],['華山','HS'],['夢時代','DM'],['武昌','WC'],['大江','DJ']]);
     const parts = dateParts(date);
-    return (initials[store] || clean(store).replace(/[^a-z0-9]/gi,'').slice(0,4).toUpperCase() || 'ST') +
+    return (initials.get(store) || clean(store).replace(/[^a-z0-9]/gi,'').slice(0,4).toUpperCase() || 'ST') +
       '-' + parts.slice(1,3).join('') + '-' + random(3);
   }
   function barcodeText(value) {
@@ -116,10 +119,12 @@
     [item.barcode,item.name,item.bookQty,item.countedQty,item.diff,item.status])];
   const groupRows = (rows,key,label) => [[label,'筆數','件數'],...rows.map(row => [row[key],row.lines,row.qty])];
   function exportRows(summary) {
+    const name = sessionName(summary.session);
+    const [head,...items] = itemRows(summary.items);
     return {
-      彙總:itemRows(summary.items),
-      明細:[['時間','場次','門市','盤點人','裝置','條碼','品名','數量'],...summary.details.map(line =>
-        [line.createdAt,line.session,line.store,line.counter,line.device,line.barcode,line.name,line.qty])],
+      彙總:[[...head,'場次名稱'],...items.map(row => [...row,name])],
+      明細:[['時間','場次名稱','門市','盤點人','裝置','條碼','品名','數量'],...summary.details.map(line =>
+        [line.createdAt,name,line.store,line.counter,line.device,line.barcode,line.name,line.qty])],
       依人員:groupRows(summary.byCounter,'counter','盤點人')
     };
   }
@@ -132,8 +137,8 @@
   }
   function filename(session, extension, date = new Date()) {
     const parts = dateParts(date);
-    return '盤點_'+session+'_'+parts.slice(0,3).join('')+'-'+parts.slice(3).join('')+'.'+extension;
+    return '盤點_'+session.replace(/[\\/:*?"<>|]/g,'-').replace(/\s+/g,'_')+'_'+parts.slice(0,3).join('')+'-'+parts.slice(3).join('')+'.'+extension;
   }
-  return {clean,random,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
+  return {clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
     upsertScan,editLine,deduped,batch,acknowledged,itemStatus,summarize,itemRows,exportRows,groupRows,csv,filename};
 });

@@ -4,6 +4,10 @@ const {test,expect,open,configure,begin,scan,itemRow,noPreflight} = require('./b
 const button = (page,name) => page.getByRole('button',{name,exact:true});
 const queue = (page,count) => expect(page.locator('#queue')).toHaveText('待上傳 '+count+' 筆',{timeout:15000});
 const summary = page => button(page,'彙總').click();
+const active = page => page.evaluate(() => InventoryApp.getState().active);
+const sessionApi = (server,action,code) => server.apiUrl+'?key=test-key&action='+action+'&session='+encodeURIComponent(code);
+const uploadStock = page => page.locator('#master-file').setInputFiles({name:'stock.csv',mimeType:'text/csv',
+  buffer:Buffer.from('JAN,商品名稱,庫存\n000001,模型甲,5')});
 
 test('camera dedupe, keyboard wedge, edits, deletion and persisted lines',async ({page,server}) => {
   await open(page,server);
@@ -52,7 +56,8 @@ test('offline queue, HTTP failure retries and idempotent sync without preflight'
   await queue(page,5);
   await context.setOffline(false);
   await queue(page,0);
-  const getSummary = () => fetch(server.apiUrl+'?action=summary&session=TEST-S1&key=test-key').then(response => response.json());
+  const {code} = await active(page);
+  const getSummary = () => fetch(sessionApi(server,'summary',code)).then(response => response.json());
   expect((await getSummary()).totals.lines).toBe(5);
   await fetch(failUrl);
   await scan(page,'RETRY');
@@ -73,15 +78,15 @@ test('offline queue, HTTP failure retries and idempotent sync without preflight'
 test('two devices join and aggregate people, devices and overlapping barcodes',async ({page,browser,server}) => {
   await open(page,server);
   await configure(page,server);
-  await begin(page);
-  await scan(page,'SHARED','manual',2);
-  await queue(page,0);
   const secondContext = await browser.newContext();
   try {
     const second = await secondContext.newPage();
     await open(second,server);
     await configure(second,server);
-    await begin(second,{counter:'小陳',join:true});
+    await Promise.all([begin(page),begin(second,{counter:'小陳'})]);
+    expect((await active(second)).code).toBe((await active(page)).code);
+    await scan(page,'SHARED','manual',2);
+    await queue(page,0);
     expect(await second.evaluate(() => InventoryApp.getState().device)).not.toBe(await page.evaluate(() => InventoryApp.getState().device));
     await scan(second,'SHARED','manual',3);
     await scan(second,'SECOND','manual',4);
@@ -155,14 +160,16 @@ test('a fresh joiner automatically loads the session master and can reload it',a
     buffer:Buffer.from('JAN,商品名稱,庫存\n000001,模型甲,5\n000002,模型乙,2')});
   await expect(page.locator('#master-count')).toHaveText('已載入 2 筆');
   await begin(page);
-  const endpoint = server.apiUrl+'?action=master&session=TEST-S1&key=test-key';
+  const endpoint = sessionApi(server,'master',(await active(page)).code);
   await expect.poll(async () => (await (await fetch(endpoint)).json()).source).toBe('session');
   const context = await browser.newContext();
   try {
     const joiner = await context.newPage();
     await open(joiner,server);
     await configure(joiner,server);
-    await begin(joiner,{join:true,counter:'小陳'});
+    await expect(joiner.locator('#session-info')).toContainText('主檔 2 筆');
+    await expect(joiner.locator('#master-controls')).toBeHidden();
+    await begin(joiner,{counter:'小陳'});
     await scan(joiner,'000001','manual',2);
     await expect(joiner.locator('#last-scan')).toContainText('模型甲');
     await expect(joiner.locator('#last-scan')).toContainText('帳面5');
@@ -172,6 +179,7 @@ test('a fresh joiner automatically loads the session master and can reload it',a
     await button(joiner,'重新載入場次主檔').click();
     await expect(joiner.locator('#summary-source')).toContainText('已載入全場資料');
     await summary(page);
+    page.once('dialog',dialog => dialog.accept());
     await button(page,'重新上傳主檔到此場次').click();
     await expect(page.locator('#toast')).toHaveText('主檔已上傳到場次（2 筆）');
     await noPreflight(server);
@@ -185,8 +193,9 @@ test('pending session master survives a reload and uploads after cloud recovery'
   await page.locator('#master-file').setInputFiles({name:'stock.csv',mimeType:'text/csv',
     buffer:Buffer.from('JAN,商品名稱,庫存\n000001,模型甲,5')});
   await expect(page.locator('#master-count')).toHaveText('已載入 1 筆');
-  await fetch(new URL('/__fail?on=1',server.apiUrl));
+  await fetch(new URL('/__fail?on=1&action=master',server.apiUrl));
   await begin(page);
+  const {code} = await active(page);
   await expect(page.locator('#sync-status')).toContainText('主檔待上傳');
   await expect(page.locator('#sync-status')).toContainText('將自動重試');
   await page.reload();
@@ -195,7 +204,7 @@ test('pending session master survives a reload and uploads after cloud recovery'
   await expect(page.locator('#last-scan')).toContainText('帳面5');
   await fetch(new URL('/__fail?on=0',server.apiUrl));
   await expect(page.locator('#sync-status')).not.toContainText('主檔待上傳',{timeout:15000});
-  const result = await fetch(server.apiUrl+'?action=master&session=TEST-S1&key=test-key').then(response => response.json());
+  const result = await fetch(sessionApi(server,'master',code)).then(response => response.json());
   expect(result).toMatchObject({source:'session',count:1});
   await queue(page,0);
 });
@@ -209,7 +218,7 @@ test('downloads contain expected spreadsheet cells and CSV BOM',async ({page,ser
     const pending = page.waitForEvent('download');
     await button(page,name).click();
     const download = await pending;
-    expect(download.suggestedFilename()).toMatch(new RegExp('^盤點_TEST-S1_\\d{8}-\\d{4}\\.'+extension+'$'));
+    expect(download.suggestedFilename()).toMatch(new RegExp('^盤點_萬年總店_\\d{4}-\\d{2}-\\d{2}_\\d{8}-\\d{4}\\.'+extension+'$'));
     const data = await fs.readFile(await download.path());
     if (extension === 'xlsx') {
       const book = XLSX.read(data);
@@ -217,8 +226,10 @@ test('downloads contain expected spreadsheet cells and CSV BOM',async ({page,ser
       expect(book.Sheets.彙總.A2.v).toBe('000123');
       expect(book.Sheets.彙總.D2.v).toBe(12);
       expect(XLSX.utils.sheet_to_json(book.Sheets.明細,{header:1})[0]).toEqual(
-        ['時間','場次','門市','盤點人','裝置','條碼','品名','數量']);
+        ['時間','場次名稱','門市','盤點人','裝置','條碼','品名','數量']);
       expect(book.Sheets.明細.H2.v).toBe(12);
+      expect(book.Sheets.明細.B2.v).toBe((await active(page)).name);
+      expect(book.Sheets.彙總.G2.v).toBe((await active(page)).name);
     } else {
       expect([...data.subarray(0,3)]).toEqual([239,187,191]);
       const book = XLSX.read(data.toString('utf8').slice(1),{type:'string',raw:true});
@@ -247,4 +258,157 @@ test('camera starts with a fake camera or displays a readable error',async ({pag
     await expect(page.locator('#preview')).toBeHidden();
   }
   expect(errors).toEqual([]);
+});
+
+test('ending flushes data, preserves summary and starts a new session under a new code',async ({page,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  const setServerDate = day => fetch(new URL('/__clock?time=2026-11-'+day+'T16:30:00Z',server.apiUrl));
+  await setServerDate(24);
+  await begin(page,{store:'武昌'});
+  const previous = await active(page);
+  expect(previous.name).toBe('武昌 2026/11/25');
+  await setServerDate(25);
+  const dialogs = [];
+  page.on('dialog',dialog => { dialogs.push(dialog.message()); return dialog.accept(); });
+  await scan(page,'FINAL','manual',4);
+  await button(page,'結束盤點').click();
+  await expect(page.locator('#start')).toBeVisible();
+  expect(dialogs).toEqual(['確定結束『'+previous.name+'』盤點？結束後無法再刷讀，下次選此門市會開新場次']);
+  expect(await active(page)).toBeNull();
+  await summary(page);
+  await button(page,'重新整理').click();
+  await expect(page.locator('#summary-source')).toContainText('已載入全場資料');
+  await expect(page.locator('#summary-session')).toHaveText(previous.name);
+  await expect(itemRow(page,'FINAL')).toContainText('4');
+  await button(page,'設定開始').click();
+  await expect(page.locator('#session-info')).toContainText('將建立新場次：武昌');
+  await begin(page);
+  const next = await active(page);
+  expect(next.code).not.toBe(previous.code);
+  expect(next.name).toBe('武昌 2026/11/26');
+});
+
+test('another device ending a session rejects offline lines and exposes a persistent backup',async ({page,browser,context,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  await begin(page);
+  const secondContext = await browser.newContext();
+  try {
+    const second = await secondContext.newPage();
+    await open(second,server);
+    await configure(second,server);
+    await begin(second,{counter:'小陳'});
+    await context.setOffline(true);
+    await scan(page,'LATE','manual',3);
+    await queue(page,1);
+    second.on('dialog',dialog => dialog.accept());
+    await button(second,'結束盤點').click();
+    await expect(second.locator('#start')).toBeVisible();
+    await context.setOffline(false);
+    await expect(page.locator('#toast')).toHaveText('場次已結束，1 筆未上傳');
+    await queue(page,0);
+    await expect(page.locator('#start')).toBeVisible();
+    await page.reload();
+    await expect(page.locator('#rejected-backup')).toBeVisible();
+    const download = page.waitForEvent('download');
+    await page.locator('#rejected-backup').click();
+    const backup = JSON.parse(await fs.readFile(await (await download).path(),'utf8'));
+    expect(backup.lines).toMatchObject([{barcode:'LATE',qty:3,dirty:false,rejected:'場次已結束'}]);
+    expect((await noPreflight(server)).detailRows).toBe(0);
+  } finally { await secondContext.close(); }
+});
+
+test('offline start uses a cached session and confirmed offline ending syncs after reconnect',async ({page,context,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  await begin(page);
+  const {code} = await active(page);
+  await button(page,'切換').click();
+  await context.setOffline(true);
+  await page.locator('#store').selectOption('華山');
+  await expect(page.locator('#session-info')).toHaveText('需連線才能開始新場次');
+  await button(page,'開始盤點').click();
+  await expect(page.locator('#toast')).toHaveText('需連線才能開始新場次');
+  await begin(page,{store:'萬年總店'});
+  expect((await active(page)).code).toBe(code);
+  await scan(page,'OFFLINE-END');
+  const confirmations = [];
+  page.on('dialog',dialog => {
+    confirmations.push(dialog.message());
+    return confirmations.length === 2 ? dialog.dismiss() : dialog.accept();
+  });
+  await button(page,'結束盤點').click();
+  await expect(page.locator('#end-session')).toBeEnabled();
+  await expect(page.locator('#scan')).toBeVisible();
+  await queue(page,1);
+  await button(page,'結束盤點').click();
+  await expect(page.locator('#sync-status')).toContainText('結束盤點待同步');
+  expect(confirmations).toHaveLength(4);
+  await context.setOffline(false);
+  await expect(page.locator('#sync-status')).not.toContainText('結束盤點待同步');
+  const get = await fetch(server.apiUrl+'?action=session&key=test-key&code='+code).then(response => response.json());
+  expect(get.session.status).toBe('已結束');
+});
+
+test('a later participant supplies the missing master for an open session',async ({page,browser,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  await page.getByLabel('有商品主檔（對照帳面）').check();
+  await begin(page);
+  const {code} = await active(page);
+  const context = await browser.newContext();
+  try {
+    const second = await context.newPage();
+    await open(second,server);
+    await configure(second,server);
+    await expect(second.locator('#session-info')).toContainText('主檔 0 筆');
+    await expect(second.locator('#master-file')).toBeVisible();
+    await uploadStock(second);
+    await expect(second.locator('#master-count')).toHaveText('已載入 1 筆');
+    await begin(second);
+    expect((await active(second)).code).toBe(code);
+    await expect(second.locator('#toast')).toHaveText('主檔已上傳到場次（1 筆）');
+  } finally { await context.close(); }
+});
+
+test('local-only sessions reopen by store and remain exportable after ending',async ({page,server}) => {
+  await open(page,server);
+  await begin(page,{store:'大江'});
+  const previous = await active(page);
+  await scan(page,'LOCAL','manual',2);
+  await button(page,'切換').click();
+  await expect(page.locator('#session-info')).toContainText('將加入進行中場次：'+previous.name);
+  await begin(page);
+  expect((await active(page)).code).toBe(previous.code);
+  page.once('dialog',dialog => dialog.accept());
+  await button(page,'結束盤點').click();
+  await expect(page.locator('#start')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('#session-info')).toContainText('將建立新場次');
+  await summary(page);
+  await expect(itemRow(page,'LOCAL')).toContainText('2');
+  await button(page,'設定開始').click();
+  await begin(page);
+  expect((await active(page)).code).not.toBe(previous.code);
+});
+
+test('two devices pressing 開始盤點 at the same time for one store share a single open session',async ({page,browser,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  const otherContext = await browser.newContext();
+  try {
+    const other = await otherContext.newPage();
+    await open(other,server);
+    await configure(other,server);
+    for (const [p,name] of [[page,'甲'],[other,'乙']]) {
+      await p.locator('#store').selectOption('大江');
+      await p.getByLabel('盤點人').fill(name);
+    }
+    await Promise.all([page,other].map(p => button(p,'開始盤點').click()));
+    await Promise.all([page,other].map(p => expect(p.locator('#scan')).toBeVisible()));
+    const [a,b] = await Promise.all([active(page),active(other)]);
+    expect(a.code).toBe(b.code);
+    expect(a.name).toMatch(/^大江 \d{4}\/\d{2}\/\d{2}$/);
+  } finally { await otherContext.close(); }
 });

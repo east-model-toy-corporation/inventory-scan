@@ -1,6 +1,6 @@
 const HEADERS = {
   主檔: ['場次','門市','條碼','品名','帳面數量','貨號'],
-  場次: ['場次代碼','場次名稱','門市','模式','建立者','建立時間','狀態'],
+  場次: ['場次代碼','場次名稱','門市','模式','建立者','建立時間','狀態','結束時間','結束者'],
   刷讀明細: ['時間','場次','門市','盤點人','裝置','條碼','品名','數量','id','更新時間','狀態'],
   彙總: ['場次','門市','條碼','品名','帳面數量','實盤數量','差異','狀態','盤點人數','最後更新']
 };
@@ -34,6 +34,19 @@ function sheets() {
       sheet.insertColumnBefore(1);
       sheet.getRange(1,1).setValue('場次').setFontWeight('bold').setBackground('#e5f1ee');
       sheet.setFrozenRows(1);
+    } else if (name === '場次' && sheet.getLastColumn() < headers.length) {
+      ensureSize(sheet,1,headers.length);
+      sheet.getRange(1,8,1,2).setValues([headers.slice(7)]).setFontWeight('bold').setBackground('#e5f1ee');
+      // 舊版允許同一門市開多個場次。保留最後建立的場次及所有歷史明細。
+      const rows = sheet.getDataRange().getValues();
+      const openStores = new Set();
+      const endedAt = taipeiTime(Date.now());
+      for (let i = rows.length - 1; i > 0; i--) {
+        const store = clean(rows[i][2]);
+        if (rows[i][6] !== '進行中') continue;
+        if (openStores.has(store)) sheet.getRange(i+1,7,1,3).setValues([['已結束',endedAt,'系統']]);
+        openStores.add(store);
+      }
     } else if (name === '刷讀明細' && sheet.getLastColumn() >= headers.length + 1) {
       const previous = sheet.getRange(1,1,1,headers.length + 1).getValues()[0];
       // 舊版明細在門市後多一欄，刪除該欄即可保留原有資料與格式。
@@ -88,8 +101,51 @@ function masterFor({sessions,stores}, code, store) {
   const master = new Map([...(stores.get('') || []), ...(stores.get(store) || [])]);
   return {master,source:master.size ? 'store' : 'none'};
 }
-function asSession([code,name,store,mode,createdBy,createdAt,status]) {
-  return {code,name,store,mode,createdBy,createdAt:createdAt ? readTaipeiTime(createdAt) : '',status};
+function asSession([code,name,store,mode,createdBy,createdAt,status,endedAt,endedBy]) {
+  return {code,name,store,mode,createdBy,createdAt:createdAt ? readTaipeiTime(createdAt) : '',status,
+    endedAt:endedAt ? readTaipeiTime(endedAt) : '',endedBy:clean(endedBy)};
+}
+const openForStore = (rows,store) => rows.find(row => clean(row[2]) === store && row[6] === '進行中');
+function openSessionResult(s,row) {
+  if (!row) return {session:null,masterCount:0};
+  const session = asSession(row);
+  const masterCount = session.mode === 'master' ?
+    masterFor(indexMaster(read(s.主檔)),session.code,session.store).master.size : 0;
+  return {session,masterCount};
+}
+function startSession(s,body) {
+  const store = clean(body.store);
+  const createdBy = clean(body.createdBy);
+  if (!store || !createdBy) throw new Error('場次資料不完整');
+  const rows = read(s.場次);
+  const open = openForStore(rows,store);
+  if (open) return {...openSessionResult(s,open),joined:true};
+  if (!['master','none'].includes(body.mode)) throw new Error('場次資料不完整');
+  const time = taipeiTime(Date.now());
+  const date = time.slice(0,10);
+  const prefixes = new Map([['萬年總店','WN'],['華山','HS'],['夢時代','DM'],['武昌','WC'],['大江','DJ']]);
+  const codes = new Set(rows.map(row => clean(row[0])));
+  let code;
+  do {
+    code = (prefixes.get(store) || 'ST')+'-'+date.replace(/-/g,'')+'-'+Math.random().toString(36).slice(2,10).toUpperCase();
+  } while (codes.has(code));
+  const row = [code,store+' '+date.replace(/-/g,'/'),store,body.mode,createdBy,time,'進行中','',''];
+  write(s.場次,s.場次.getLastRow()+1,[row],[1,6,8]);
+  return {...openSessionResult(s,row),joined:false};
+}
+function endSession(s,body) {
+  const code = clean(body.code);
+  const endedBy = clean(body.endedBy);
+  if (!code || !endedBy) throw new Error('場次資料不完整');
+  const rows = s.場次.getDataRange().getValues();
+  const index = rows.findIndex((row,i) => i > 0 && clean(row[0]) === code);
+  if (index < 0) throw new Error('場次不存在');
+  const row = rows[index];
+  if (row[6] !== '已結束') {
+    row.splice(6,3,'已結束',taipeiTime(Date.now()),endedBy);
+    write(s.場次,index+1,[row.slice(0,9)],[1,6,8]);
+  }
+  return {session:asSession(row)};
 }
 function asLine([createdAt,session,store,counter,device,barcode,name,qty,id,updatedAt,status]) {
   if (typeof createdAt === 'string' && /^\d{4}-\d\d-\d\d /.test(createdAt)) {
@@ -196,6 +252,7 @@ function upload(s, body) {
   const lines = sheet.getDataRange().getValues().slice(1).map(row => row[8] ? asLine(row) : null);
   const positions = new Map();
   lines.forEach((line,i) => { if (line) positions.set(line.id,i); });
+  const ended = new Set(read(s.場次).filter(row => row[6] === '已結束').map(row => clean(row[0])));
   const changes = new Set();
   const acks = [], rejected = [];
   for (const raw of body.lines) {
@@ -203,6 +260,10 @@ function upload(s, body) {
     try { line = validateLine(raw); }
     catch (error) { rejected.push({id:raw && raw.id,error:error.message}); continue; }
     let index = positions.get(line.id);
+    if (ended.has(line.session) || (lines[index] && ended.has(lines[index].session))) {
+      rejected.push({id:line.id,error:'場次已結束'});
+      continue;
+    }
     const old = lines[index];
     let status = 'inserted';
     if (old) status = line.updatedAt > old.updatedAt ? 'updated' : line.updatedAt === old.updatedAt ? 'unchanged' : 'stale';
@@ -233,6 +294,7 @@ function route(s, body, post) {
         const {master,source} = masterFor(indexMaster(read(s.主檔)),code,clean(session ? session[2] : body.store));
         return {items:[...master.values()],source,count:master.size};
       }
+      case 'openSession': return openSessionResult(s,openForStore(read(s.場次),clean(body.store)));
       case 'session': {
         const row = read(s.場次).find(row => row[0] === clean(body.code));
         return {session:row ? asSession(row) : null};
@@ -245,6 +307,7 @@ function route(s, body, post) {
       const code = clean(body.session);
       const session = code && read(s.場次).find(row => clean(row[0]) === code);
       if (!session) throw new Error('場次不存在');
+      if (session[6] === '已結束') throw new Error('場次已結束');
       if (!Array.isArray(body.items) || body.replace !== true) throw new Error('主檔格式錯誤');
       if (body.items.length > 30000) throw new Error('每次最多上傳 30000 筆主檔');
       const rows = body.items.map(item => {
@@ -252,18 +315,16 @@ function route(s, body, post) {
         if (!barcode || barcode.length > 64 || !Number.isFinite(Number(item.bookQty))) throw new Error('主檔欄位錯誤');
         return [code,session[2],barcode,clean(item.name),Number(item.bookQty),clean(item.sku)];
       });
-      replaceRows(s.主檔,[...read(s.主檔).filter(row => clean(row[0]) !== code),...rows],[1,3,6]);
+      const previous = read(s.主檔);
+      if (body.ifMissing && indexMaster(previous).sessions.has(code)) {
+        throw new Error('場次已有主檔');
+      }
+      replaceRows(s.主檔,[...previous.filter(row => clean(row[0]) !== code),...rows],[1,3,6]);
       return {count:rows.length};
     }
-    case 'createSession': {
-      const code = clean(body.code);
-      const old = read(s.場次).find(row => row[0] === code);
-      if (old) return {session:asSession(old)};
-      if (!code || !clean(body.store) || !['master','none'].includes(body.mode)) throw new Error('場次資料不完整');
-      const row = [code,clean(body.name),clean(body.store),body.mode,clean(body.createdBy),taipeiTime(Date.now()),'進行中'];
-      write(s.場次,s.場次.getLastRow()+1,[row],[1,6]);
-      return {session:asSession(row)};
-    }
+    case 'createSession':
+    case 'startSession': return startSession(s,body);
+    case 'endSession': return endSession(s,body);
   }
   throw new Error('未知的操作');
 }

@@ -7,8 +7,12 @@ const base = {id:'A1',session:'S1',store:'萬年總店',counter:'小林',device:
 const later = '2026-11-24T01:01:00.000Z';
 const upload = (gas, ...lines) => gas.post({action:'upload',lines});
 const summary = (gas, device) => gas.get({action:'summary',session:'S1',device});
-const session = (gas,mode = 'master') => gas.post({action:'createSession',code:'S1',name:'例行盤點',
-  store:base.store,createdBy:base.counter,mode});
+const startSession = (gas,mode = 'master',store = base.store) =>
+  gas.post({action:'startSession',store,createdBy:base.counter,mode});
+const session = (gas,mode = 'master',code = 'S1',store = base.store) => {
+  gas.setup();
+  gas.spreadsheet.getSheetByName('場次').appendRow([code,'例行盤點',store,mode,base.counter,base.createdAt,'進行中']);
+};
 const rows = (gas,name) => gas.spreadsheet.getSheetByName(name).getDataRange().getValues();
 
 test('setup creates and freezes the required headers',() => {
@@ -17,7 +21,7 @@ test('setup creates and freezes the required headers',() => {
   gas.setup();
   const expected = {
     主檔:'場次 門市 條碼 品名 帳面數量 貨號',
-    場次:'場次代碼 場次名稱 門市 模式 建立者 建立時間 狀態',
+    場次:'場次代碼 場次名稱 門市 模式 建立者 建立時間 狀態 結束時間 結束者',
     刷讀明細:'時間 場次 門市 盤點人 裝置 條碼 品名 數量 id 更新時間 狀態',
     彙總:'場次 門市 條碼 品名 帳面數量 實盤數量 差異 狀態 盤點人數 最後更新'
   };
@@ -110,9 +114,11 @@ test('API key enforcement and session creation are consistent',() => {
   assert.equal(createGas({key:null}).get({action:'ping'}).error,'unauthorized');
   assert.equal(gas.get({action:'ping'}).ok,true);
   assert.equal(gas.get({action:'session',code:'S1'}).session,null);
-  const first = session(gas);
-  assert.deepEqual(session(gas,'none'),first);
-  assert.deepEqual(gas.get({action:'session',code:'S1'}).session,first.session);
+  const first = startSession(gas);
+  assert.equal(first.joined,false);
+  assert.deepEqual(startSession(gas,'none'),{...first,joined:true});
+  const {code} = first.session;
+  assert.deepEqual(gas.get({action:'session',code}).session,first.session);
   const sessionRows = rows(gas,'場次');
   assert.equal(sessionRows.length,2);
   const taipei = sessionRows[1][5];
@@ -120,7 +126,7 @@ test('API key enforcement and session creation are consistent',() => {
   assert.equal(new Date(taipei.replace(' ','T')+'+08:00').toISOString(),first.session.createdAt);
   const legacy = '2026-11-24T01:00:00.123Z';
   gas.spreadsheet.getSheetByName('場次').getRange(2,6).setValues([[legacy]]);
-  assert.equal(gas.get({action:'session',code:'S1'}).session.createdAt,legacy);
+  assert.equal(gas.get({action:'session',code}).session.createdAt,legacy);
 });
 test('invalid lines are rejected without discarding valid lines',() => {
   const gas = createGas();
@@ -149,13 +155,13 @@ test('UPC aliases, distinct devices with the same name and renamed devices aggre
 test('session masters replace only their own rows and override store fallback in summaries',() => {
   const gas = createGas();
   session(gas);
-  gas.post({action:'createSession',code:'S2',store:base.store,mode:'master'});
+  session(gas,'master','S2','武昌');
   const sheet = gas.spreadsheet.getSheetByName('主檔');
-  sheet.appendRow(['',base.store,base.barcode,'門市商品',12,'']);
+  sheet.appendRow(['','',base.barcode,'門市商品',12,'']);
   const load = code => gas.get({action:'master',session:code});
   const save = (code,items) => gas.post({action:'master',session:code,store:base.store,items,replace:true});
   assert.equal(load('S2').source,'store');
-  assert.equal(load('missing').source,'none');
+  assert.equal(load('missing').source,'store');
   assert.equal(save('missing',[]).error,'場次不存在');
   assert.equal(save(undefined,[]).error,'場次不存在');
   assert.equal(rows(gas,'主檔').length,2);
@@ -188,10 +194,74 @@ test('a valid hash bootstraps the key once and the existing property takes prece
   const gas = createGas({key:null,keyHash});
   assert.equal(gas.get({action:'ping',key:'wrong'}).error,'unauthorized');
   assert.equal(gas.props.has('API_KEY'),false);
-  assert.equal(gas.post({action:'createSession',code:'S1',store:base.store,mode:'master',key}).ok,true);
+  assert.equal(gas.post({action:'startSession',store:base.store,createdBy:base.counter,mode:'master',key}).ok,true);
   assert.equal(gas.props.get('API_KEY'),key);
   assert.equal(gas.get({action:'ping',key:'wrong'}).error,'unauthorized');
   gas.props.set('API_KEY','new-key');
   assert.equal(gas.get({action:'ping',key}).error,'unauthorized');
   assert.equal(gas.get({action:'ping',key:'new-key'}).ok,true);
+});
+
+test('a second start commits while the first waits for the lock; both return one session',() => {
+  let interleave = true, second;
+  const gas = createGas({onLockWait:() => {
+    if (!interleave) return;
+    interleave = false;
+    second = startSession(gas,'master','武昌');
+  }});
+  const first = startSession(gas,'none','武昌');
+  assert.equal(second.joined,false);
+  assert.equal(first.joined,true);
+  assert.deepEqual(first.session,second.session);
+  assert.equal(rows(gas,'場次').length,2);
+});
+
+test('open sessions keep their Taipei start date across days and close independently by store',() => {
+  const gas = createGas();
+  let now = Date.parse('2026-11-24T16:30:00Z');
+  gas.context.Date = class extends Date { static now() { return now; } };
+  const getOpen = store => gas.get({action:'openSession',store});
+  assert.equal(getOpen('武昌').session,null);
+  const {session} = startSession(gas,'master','武昌');
+  assert.equal(session.name,'武昌 2026/11/25');
+  const other = startSession(gas,'none','華山').session;
+  now += 86400000;
+  assert.deepEqual(startSession(gas,'none','武昌').session,session);
+  const master = {action:'master',session:session.code,replace:true,ifMissing:true,
+    items:[{barcode:base.barcode,bookQty:2}]};
+  assert.equal(gas.post(master).count,1);
+  assert.equal(gas.post(master).error,'場次已有主檔');
+  assert.equal(gas.post({...master,ifMissing:false}).count,1);
+  assert.equal(getOpen('武昌').masterCount,1);
+  const line = {...base,session:session.code,store:session.store};
+  assert.equal(upload(gas,line).acks.length,1);
+  const end = {action:'endSession',code:session.code,endedBy:'小陳'};
+  const closed = gas.post(end).session;
+  assert.equal(closed.status,'已結束');
+  assert.equal(closed.endedAt,new Date(now).toISOString());
+  assert.equal(closed.endedBy,'小陳');
+  assert.deepEqual(gas.post({...end,endedBy:'小林'}).session,closed);
+  assert.equal(getOpen('武昌').session,null);
+  assert.deepEqual(getOpen('華山').session,other);
+  assert.deepEqual(upload(gas,{...line,qty:3,updatedAt:later}).rejected,[{id:line.id,error:'場次已結束'}]);
+  assert.equal(gas.post(master).error,'場次已結束');
+  assert.equal(gas.get({action:'summary',session:session.code}).totals.qty,2);
+  const next = startSession(gas,'none','武昌');
+  assert.equal(next.joined,false);
+  assert.notEqual(next.session.code,session.code);
+  assert.equal(next.session.name,'武昌 2026/11/26');
+});
+
+test('legacy duplicate open sessions are closed in place, keeping the newest and historical rows',() => {
+  const gas = createGas();
+  const sheet = gas.spreadsheet.insertSheet('場次');
+  sheet.appendRow('場次代碼 場次名稱 門市 模式 建立者 建立時間 狀態'.split(' '));
+  for (const code of ['OLD','NEW']) {
+    sheet.appendRow([code,code,'武昌','none','小林',base.createdAt,'進行中']);
+  }
+  gas.setup();
+  gas.setup();
+  assert.deepEqual(rows(gas,'場次')[0].slice(7),['結束時間','結束者']);
+  assert.equal(gas.get({action:'openSession',store:'武昌'}).session.code,'NEW');
+  assert.equal(gas.get({action:'session',code:'OLD'}).session.status,'已結束');
 });

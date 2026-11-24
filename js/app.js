@@ -12,9 +12,12 @@
     dedupe:1500,beep:true,vibrate:true
   },S.get('config',{}));
   let custom = S.get('stores',[]), sessions = S.get('sessions',{});
-  let masters = new Map(), draftMaster;
+  let masters = new Map(), draftMaster, openPreview = null, lookingUp = false, ending = false, preferredMode = 'none';
+  let lastSession = S.get('lastSession',null), syncing;
+  const summarySession = () => active || lastSession;
+  const sessionName = C.sessionName;
   let active = S.get('active',null), lines = new Map(), lastId, editingId, remote, view = 'start';
-  let busy = false, retryAt = 0, delay = 2000, lastSync = '', syncError = '', toastTimer, audio;
+  let retryAt = 0, delay = 2000, lastSync = '', syncError = '', toastTimer, audio;
   let summaryDue = false, nextSummaryAt = 0;
   let lookupToken = 0, lastMutation = 0;
   const seen = new Map();
@@ -65,17 +68,36 @@
   function save(key,value) {
     if (!S.set(key,value)) toast('無法儲存本機設定');
   }
+  const uploadable = line => {
+    const session = sessions[line.session];
+    return !session || (!session.local && !session.pending && !session.pendingEnd &&
+      (!session.cloud || session.cloud === config.url));
+  };
   function showQueue() {
-    const dirty = values().filter(line => line.dirty).length;
+    const dirty = values().filter(line => line.dirty && uploadable(line)).length;
+    const rejected = values().filter(line => line.rejected).length;
+    const legacyPending = config.url && Object.values(sessions).some(session => session.pending && !session.status);
+    $('rejected-backup').hidden = !rejected && !legacyPending;
     $('queue').textContent = config.url ? '待上傳 '+dirty+' 筆' : '未設定雲端，僅存本機';
     $('sync-status').textContent = config.url ? [
       !navigator.onLine ? '離線中' : '', lastSync ? '上次同步 '+clock(lastSync) : '',
-      [...masters.values()].some(master => master.pending) ? '主檔待上傳' : '', syncError
+      [...masters.values()].some(master => master.pending) ? '主檔待上傳' : '',
+      Object.values(sessions).some(session => session.pendingEnd) ? '結束盤點待同步' : '',
+      rejected ? '場次已結束，'+rejected+' 筆未上傳' : '',
+      legacyPending ? '舊版未同步場次可匯出本機備份' : '', syncError
     ].filter(Boolean).join(' · ') : '';
   }
-  function rememberSession(session,pending) {
-    sessions = {...sessions,[session.code]:{...session,pending}};
+  function rememberSession(session) {
+    sessions = {...sessions,[session.code]:session};
     save('sessions',sessions);
+  }
+  function invalidateCachedSessions(store,cloud,openCode) {
+    for (const cached of Object.values(sessions)) {
+      if (cached.store === store && cached.status === '進行中' && cached.code !== openCode &&
+          !cached.local && (!cached.cloud || cached.cloud === cloud)) {
+        rememberSession({...cached,status:'已結束'});
+      }
+    }
   }
   function own(line) {
     return line.device === device || line.device.startsWith(device+'｜');
@@ -86,39 +108,54 @@
   function wireDevice(line) {
     return {...line,device:device+'｜'+config.deviceName};
   }
-  async function syncNow(force = true) {
+  function syncNow(force = true, code) {
+    if (ending && !force) return Promise.resolve();
+    if (!syncing) syncing = sync(force,code).finally(() => { syncing = null; });
+    return syncing;
+  }
+  async function sync(force, code) {
     await localReady;
-    if (busy || !config.url || !navigator.onLine || (!force && Date.now() < retryAt)) return;
+    if (!config.url || !navigator.onLine || (!force && Date.now() < retryAt)) return;
     const connection = {...config};
     const sameConnection = () => connection.url === config.url && connection.key === config.key;
-    const pending = Object.values(sessions).filter(session => session.pending);
-    const pendingMasters = [...masters.values()].filter(master => master.pending);
-    if (!pending.length && !pendingMasters.length && !C.batch(values()).length) {
+    const pendingEnds = Object.values(sessions).filter(session => !code && session.pendingEnd && session.cloud === connection.url);
+    const inScope = line => (!code || code === line.session) && uploadable(line);
+    const pendingMasters = [...masters.values()].filter(master => master.pending && inScope({session:master.code}));
+    if (!pendingEnds.length && !pendingMasters.length && !C.batch(values().filter(inScope)).length) {
       refreshAfterSync();
       return;
     }
-    busy = true;
     try {
-      for (const session of pending) {
-        const result = await api(connection,'createSession',session,true);
+      for (const session of pendingEnds) {
+        const result = await api(connection,'endSession',{code:session.code,endedBy:session.endedBy},true);
         if (!sameConnection()) return;
-        if (result.session.store !== session.store || result.session.mode !== session.mode) {
-          throw new Error('場次代碼已被其他門市或模式使用，請確認場次設定');
-        }
-        if (sessions[session.code] === session) rememberSession(result.session,false);
+        rememberSession({...result.session,cloud:session.cloud});
       }
+      let masterError;
       for (const master of pendingMasters) {
         if (masters.get(master.code) !== master) continue;
-        const result = await api(connection,'master',{
-          session:master.code,store:master.store,items:master.items,replace:true
-        },true);
-        if (!sameConnection()) return;
-        if (masters.get(master.code) === master) {
-          await useMaster({...master,pending:false,local:false});
-          toast('主檔已上傳到場次（'+result.count+' 筆）');
+        try {
+          const result = await api(connection,'master',{
+            session:master.code,store:master.store,items:master.items,replace:true,ifMissing:!master.overwrite
+          },true);
+          if (!sameConnection()) return;
+          if (masters.get(master.code) === master) {
+            await useMaster({...master,pending:false,local:false});
+            toast('主檔已上傳到場次（'+result.count+' 筆）');
+          }
+        } catch (error) {
+          if (!sameConnection()) return;
+          if (error.message === '場次已結束') await rejectEnded(master.code);
+          else if (error.message === '場次已有主檔') {
+            if (masters.get(master.code) === master) {
+              await fetchMaster(master,true);
+              toast('已載入場次主檔');
+            }
+          } else if (code) masterError = error;
+          else throw error;
         }
       }
-      const batch = C.batch(values());
+      const batch = C.batch(values().filter(inScope));
       if (batch.length) {
         const snapshots = new Map(batch.map(line => [line.id,line]));
         await Promise.all(batch.map(line => writes.get(line.id) || (unpersisted.has(line.id) ? S.put(line) : undefined)));
@@ -135,10 +172,14 @@
             throw error;
           }
         }
-        if (result.rejected.length || result.acks.length < batch.length) {
-          throw new Error(result.rejected.length ? '明細上傳失敗：'+result.rejected[0].error : '部分明細未收到上傳確認');
+        const ended = result.rejected.filter(row => row.error === '場次已結束');
+        for (const code of new Set(ended.map(row => snapshots.get(row.id).session))) await rejectEnded(code);
+        const otherError = result.rejected.find(row => row.error !== '場次已結束');
+        if (otherError || result.acks.length + ended.length < batch.length) {
+          throw new Error(otherError ? '明細上傳失敗：'+otherError.error : '部分明細未收到上傳確認');
         }
       }
+      if (masterError) throw masterError;
       delay = 2000;
       retryAt = 0;
       lastSync = new Date().toISOString();
@@ -151,7 +192,7 @@
         retryAt = Date.now()+delay;
         delay = Math.min(delay*2,60000);
       }
-    } finally { busy = false; showQueue(); }
+    } finally { showQueue(); }
   }
   function storeOptions(selected) {
     const options = [...stores,...custom];
@@ -160,21 +201,26 @@
     $('store').value = selected && selected !== '+' ? selected : options[0];
   }
   function storeChanged() {
-    $('custom-entry').hidden = $('store').value !== '+';
-    if ($('store').value !== '+' && chosen('session-type') === 'new') $('code').value = C.sessionCode($('store').value);
-    showMaster();
+    const store = $('store').value;
+    $('custom-entry').hidden = store !== '+';
+    lookup(store);
   }
   function showMaster() {
-    const join = chosen('session-type') === 'join';
-    const code = C.clean($('code').value).toUpperCase();
-    const items = draftMaster && draftMaster.store === $('store').value ? draftMaster.items : itemsFor(code);
-    $('master-controls').hidden = chosen('mode') !== 'master';
-    $('master-count').textContent = '已載入 '+items.length+' 筆';
-    $('load-master').disabled = !config.url || (join && !code);
+    const preview = openPreview && openPreview.session;
+    const draft = draftMaster && draftMaster.store === $('store').value ? draftMaster : null;
+    for (const radio of document.querySelectorAll('input[name="mode"]')) {
+      radio.disabled = lookingUp || !!preview;
+      radio.checked = radio.value === (preview ? preview.mode : preferredMode);
+    }
+    $('master-controls').hidden = lookingUp || $('store').value === '+' || chosen('mode') !== 'master' ||
+      !!(preview && openPreview.masterCount);
+    $('master-count').textContent = '已載入 '+(draft ? draft.items.length : 0)+' 筆';
+    $('load-master').disabled = !config.url;
     const activeMaster = active && active.mode === 'master';
+    const connected = config.url && activeMaster && !active.local && (!active.cloud || active.cloud === config.url);
     $('session-master-actions').hidden = !activeMaster;
-    $('send-master').disabled = !config.url || !activeMaster || !itemsFor(active.code).length;
-    $('reload-master').disabled = !config.url || !activeMaster;
+    $('send-master').disabled = !connected || !itemsFor(active.code).length;
+    $('reload-master').disabled = !connected;
   }
   async function useMaster(record) {
     await S.putMaster(record);
@@ -182,13 +228,13 @@
     showMaster();
     showQueue();
   }
-  async function fetchMaster(session) {
+  async function fetchMaster(session,replacePending = false) {
     const {code,store} = session;
     const previous = masters.get(code);
     const connection = {...config};
     const result = await api(connection,'master',{session:code,store});
     if (connection.url !== config.url || connection.key !== config.key ||
-        masters.get(code) !== previous || (previous && previous.pending)) return;
+        masters.get(code) !== previous || (previous && previous.pending && !replacePending)) return;
     if (result.source === 'none' && previous && previous.local) return;
     await useMaster({code,store,items:result.items});
     if (active && active.code === code) {
@@ -199,54 +245,67 @@
       if (view === 'summary') renderSummary();
     }
   }
-  function setSessionType() {
-    lookupToken++;
-    const join = chosen('session-type') === 'join';
-    $('lookup').hidden = !join;
-    $('name-field').hidden = join;
-    $('session-info').textContent = '';
-    $('code').value = join ? '' : C.sessionCode($('store').value);
-    showMaster();
+  function cachedOpen(store) {
+    const session = Object.values(sessions).reverse().find(item => item.store === store &&
+      (item.status === '進行中' || (!config.url && item.pending && !item.status)) &&
+      (config.url ? !item.local && !item.pending && (!item.cloud || item.cloud === config.url) : item.local || !item.cloud));
+    return {session:session || null,masterCount:session ? itemsFor(session.code).length : 0};
   }
-  async function lookup(code) {
+  async function lookup(store) {
     const token = ++lookupToken;
-    const local = Object.prototype.hasOwnProperty.call(sessions,code) ? sessions[code] : null;
-    let session = local, cloudSession;
-    let message = '';
-    if (config.url) {
-      $('session-info').textContent = '正在查詢場次…';
+    const connection = {...config};
+    openPreview = null;
+    lookingUp = !!connection.url && navigator.onLine && store !== '+';
+    showMaster();
+    $('session-info').textContent = store === '+' ? '' : '正在查詢場次…';
+    if (store === '+') return null;
+    let result = cachedOpen(store);
+    let message = '', authoritative = false;
+    const offline = '需連線才能開始新場次';
+    if (connection.url) {
       try {
-        cloudSession = (await api(config,'session',{code})).session;
-        session = cloudSession || local;
-        if (!session) message = '雲端查無此場次，仍可開始盤點';
-      } catch (error) { message = error.message+'，仍可開始盤點'; }
-    } else if (!session) message = '未設定雲端，仍可加入並在本機盤點';
-    if (token !== lookupToken || C.clean($('code').value).toUpperCase() !== code) return null;
-    if (session) {
-      if (cloudSession && ($('store').value !== session.store || chosen('mode') !== session.mode)) {
-        toast('已套用雲端場次的門市與盤點模式');
+        if (navigator.onLine) {
+          result = await api(connection,'openSession',{store});
+          authoritative = true;
+        }
+        else if (!result.session) message = offline;
+      } catch (error) {
+        if (!error.unavailable) {
+          result = {session:null,masterCount:0};
+          message = error.message;
+        } else if (!result.session) message = offline;
       }
-      storeOptions(session.store);
-      $('custom-entry').hidden = true;
-      document.querySelector('input[name="mode"][value="'+(session.mode === 'master' ? 'master' : 'none')+'"]').checked = true;
-      message = [session.store,session.mode === 'master' ? '有商品主檔' : '無主檔',session.createdAt ? clock(session.createdAt) : '',message].filter(Boolean).join(' · ');
-      showMaster();
     }
+    if (token !== lookupToken || connection.url !== config.url || connection.key !== config.key) return null;
+    lookingUp = false;
+    const {session,masterCount} = result;
+    if (authoritative) invalidateCachedSessions(store,connection.url,session && session.code);
+    if (session) {
+      const saved = sessions[session.code];
+      if (!saved || !saved.pendingEnd) {
+        rememberSession({...session,status:'進行中',cloud:connection.url,local:!connection.url,pending:false});
+      }
+    }
+    openPreview = result;
+    if (!message) message = session ?
+      '將加入進行中場次：'+sessionName(session)+'（開始於 '+clock(session.createdAt)+'，模式 '+
+        (session.mode === 'master' ? '有商品主檔' : '無主檔')+'，主檔 '+masterCount+' 筆）' :
+      '將建立新場次：'+store+' '+C.taipeiDate(new Date());
     $('session-info').textContent = message;
-    return session;
+    showMaster();
+    return result;
   }
   function identity() {
-    $('identity').textContent = active ? [active.code,active.store,active.counter].join(' ／ ') : '尚未開始盤點';
+    $('identity').textContent = active ? [sessionName(active),active.counter].join(' ／ ') : '尚未開始盤點';
     $('switch').hidden = !active;
+    $('end-session').hidden = !active || !['scan','summary'].includes(view);
   }
   function go(next) {
-    if (!active && ['scan','summary'].includes(next)) { toast('請先開始盤點'); return; }
+    if ((next === 'scan' && !active) || (next === 'summary' && !summarySession())) { toast('請先開始盤點'); return; }
     if (view === 'scan' && next !== 'scan') scanner.stop();
-    if (next === 'start' && active && view !== 'start' && chosen('session-type') === 'new') {
-      $('code').value = C.sessionCode($('store').value);
-      $('session-info').textContent = '';
-    }
     view = next;
+    identity();
+    if (next === 'start') storeChanged();
     for (const tab of document.querySelectorAll('[data-view]')) {
       const current = tab.dataset.view === next;
       $(tab.dataset.view).hidden = !current;
@@ -264,28 +323,59 @@
   async function begin(event) {
     event.preventDefault();
     await localReady;
-    const code = C.clean($('code').value).toUpperCase();
-    const counter = C.clean($('counter').value);
-    if (!code || !counter || $('store').value === '+') { toast('請填寫門市、盤點人與場次'); return; }
+    const store = $('store').value, counter = C.clean($('counter').value), mode = preferredMode;
+    if (!counter || store === '+') { toast('請填寫門市與盤點人'); return; }
+    if ($('begin').disabled || ending) return;
     $('begin').disabled = true;
+    $('store').disabled = true;
     try {
-      const join = chosen('session-type') === 'join';
-      let session = join ? await lookup(code) : null;
-      if (!session) session = {code,name:join ? '' : C.clean($('session-name').value),store:$('store').value,
-        mode:chosen('mode'),createdBy:counter,createdAt:new Date().toISOString()};
-      rememberSession(session,!join || !!session.pending || !session.status);
+      const connection = {...config};
+      await lookup(store);
+      if (connection.url !== config.url || connection.key !== config.key) throw new Error('雲端設定已變更，請重新開始盤點');
+      let session, joined;
+      if (config.url) {
+        const closing = Object.values(sessions).find(item => item.store === store && item.pendingEnd && item.cloud === config.url);
+        if (closing) {
+          await syncNow();
+          if (sessions[closing.code].pendingEnd) throw new Error('需連線才能完成上一場盤點');
+        }
+        try {
+          if (!navigator.onLine) throw Object.assign(new Error(),{unavailable:true});
+          ({session,joined} = await api(connection,'startSession',{store,mode,createdBy:counter},true));
+        } catch (error) {
+          if (!error.unavailable) throw error;
+          session = cachedOpen(store).session;
+          if (!session) throw new Error('需連線才能開始新場次');
+          joined = true;
+        }
+      } else {
+        session = cachedOpen(store).session;
+        joined = !!session;
+        if (!session) {
+          const date = new Date();
+          session = {code:C.sessionCode(store,date)+'-'+C.random(8),name:store+' '+C.taipeiDate(date),
+            store,mode,createdBy:counter,createdAt:date.toISOString(),status:'進行中'};
+        }
+      }
+      if (connection.url !== config.url || connection.key !== config.key) throw new Error('雲端設定已變更，請重新開始盤點');
+      const {code} = session;
+      if (connection.url) invalidateCachedSessions(store,connection.url,code);
+      session = {...session,status:'進行中',cloud:connection.url,local:!connection.url,pending:false};
+      rememberSession(session);
       if (session.mode === 'master') {
-        if (join && config.url) {
+        if (joined && config.url && navigator.onLine) {
           try { await fetchMaster(session); }
           catch (error) { toast(error.message); }
         }
-        if (draftMaster && draftMaster.store === session.store && (!join || !itemsFor(code).length)) {
-          await useMaster({code,store:session.store,items:draftMaster.items,local:draftMaster.imported,
-            pending:!join && !!config.url && draftMaster.imported});
-          draftMaster = null;
+        const draft = draftMaster && draftMaster.store === store ? draftMaster : null;
+        if (draft && (!joined || !itemsFor(code).length)) {
+          await useMaster({code,store,items:draft.items,local:draft.imported,
+            pending:!!config.url && draft.imported});
         }
       }
+      if (draftMaster && draftMaster.store === store) draftMaster = null;
       active = {...session,counter};
+      save('counter',counter);
       lastId = editingId = remote = null;
       summaryDue = false;
       nextSummaryAt = 0;
@@ -295,7 +385,80 @@
       go('scan');
       syncNow(false);
     } catch (error) { toast(error.message); }
-    finally { $('begin').disabled = false; }
+    finally { $('begin').disabled = $('store').disabled = false; }
+  }
+  function closeSession(session) {
+    rememberSession(session);
+    if (!active || active.code !== session.code) return;
+    lastSession = {...session,counter:active.counter};
+    save('lastSession',lastSession);
+    active = null;
+    save('active',null);
+    go('start');
+  }
+  async function rejectEnded(code) {
+    if (sessions[code]) closeSession({...sessions[code],status:'已結束'});
+    const master = masters.get(code);
+    if (master && master.pending) await useMaster({...master,pending:false});
+    let count = 0;
+    for (const line of values()) {
+      if (line.session !== code || !line.dirty) continue;
+      const rejected = {...line,dirty:false,rejected:'場次已結束'};
+      await (writes.get(line.id) || Promise.resolve());
+      await S.put(rejected);
+      lines.set(line.id,rejected);
+      count++;
+    }
+    showQueue();
+    if (count) toast('場次已結束，'+count+' 筆未上傳');
+  }
+  async function endActiveSession() {
+    const current = active;
+    if (!current || ending || $('begin').disabled ||
+        !window.confirm('確定結束『'+sessionName(current)+'』盤點？結束後無法再刷讀，下次選此門市會開新場次')) return;
+    ending = true;
+    $('end-session').disabled = true;
+    scanner.stop();
+    const cloud = current.local ? '' : current.cloud || config.url;
+    try {
+      let ended = {...current,status:'已結束',endedAt:new Date().toISOString(),endedBy:current.counter};
+      if (cloud) {
+        if (cloud !== config.url) throw new Error('請先恢復此場次的雲端連線設定');
+        const pending = () => values().filter(line => line.session === current.code && line.dirty).length;
+        const remaining = () => pending() + Number(!!(masters.get(current.code) || {}).pending);
+        await syncing;
+        let previous;
+        do {
+          previous = remaining();
+          await syncNow(true,current.code);
+        } while (remaining() && remaining() < previous);
+        if (active !== current) return;
+        const confirmPending = () => window.confirm('尚有資料未同步。確定結束盤點？未上傳的明細將保留在本機備份。');
+        let confirmed = false;
+        if (!navigator.onLine || remaining()) {
+          if (!confirmPending()) return;
+          confirmed = true;
+        }
+        try {
+          if (!navigator.onLine) throw Object.assign(new Error(),{unavailable:true});
+          const result = await api(config,'endSession',{code:current.code,endedBy:current.counter},true);
+          ended = {...result.session,cloud};
+        } catch (error) {
+          if (!error.unavailable) throw error;
+          if (!confirmed && !confirmPending()) return;
+          ended.pendingEnd = true;
+          ended.cloud = cloud;
+        }
+        rememberSession(ended);
+        if (remaining()) await rejectEnded(current.code);
+      }
+      closeSession(ended);
+      showQueue();
+    } catch (error) { toast(error.message); }
+    finally {
+      ending = false;
+      $('end-session').disabled = false;
+    }
   }
   function unlockAudio() {
     if (!config.beep) return;
@@ -337,7 +500,7 @@
   }
   async function handleScan(code,source = 'camera',qty = 1) {
     await localReady;
-    if (!active || view !== 'scan') return false;
+    if (!active || ending || view !== 'scan') return false;
     const raw = C.clean(code);
     if (!raw || raw.length > 64 || !Number.isInteger(qty) || qty < 1 || qty > 999999) return false;
     const product = active.mode === 'master' && C.findProduct(C.masterIndex(itemsFor(active.code)),raw);
@@ -355,7 +518,7 @@
   }
   function update(line,qty) {
     const current = lines.get(line.id);
-    if (!current || current.deleted) return;
+    if (!active || ending || !current || current.deleted || current.rejected) return;
     if (!Number.isInteger(qty) || qty < 0 || qty > 999999) { toast('請輸入 0 到 999,999 的整數'); return; }
     if (qty === 0 && !window.confirm('確定刪除此筆刷讀明細？')) return;
     editingId = null;
@@ -363,18 +526,19 @@
     record(C.editLine(current,{qty,deleted:qty === 0},mutationTime()));
   }
   function combined() {
+    const session = summarySession();
     const merged = new Map();
     for (const line of remote ? [...remote.details,...(remote.tombstones || [])] : []) merged.set(line.id,line);
     for (const line of values()) {
-      if (line.session !== active.code) continue;
+      if (line.session !== session.code || line.rejected) continue;
       const server = merged.get(line.id);
       if (!server || line.updatedAt > server.updatedAt) merged.set(line.id,line);
     }
-    const master = C.masterIndex(itemsFor(active.code));
-    if (remote && active.mode === 'master' && !masters.has(active.code)) for (const item of remote.items) {
+    const master = C.masterIndex(itemsFor(session.code));
+    if (remote && session.mode === 'master' && !masters.has(session.code)) for (const item of remote.items) {
       if (item.bookQty !== '') master.set(item.barcode,item);
     }
-    return C.summarize(active,[...merged.values()],master,device);
+    return C.summarize(session,[...merged.values()],master,device);
   }
   function metrics(target,entries) {
     replace(target,...entries.map(([label,value,style]) => {
@@ -466,7 +630,9 @@
     return container;
   }
   function renderSummary() {
-    if (!active) return;
+    const session = summarySession();
+    if (!session) return;
+    $('summary-session').textContent = sessionName(session);
     const summary = combined();
     $('summary-source').textContent = remote ? '已載入全場資料'+(remote.updatedAt ? ' · '+clock(remote.updatedAt) : '') :
       '僅本機資料'+(config.url ? ' · 可重新整理取得全場資料' : '');
@@ -487,15 +653,15 @@
     if (summaryDue && active && active.mode === 'master' && Date.now() >= nextSummaryAt) refresh(true);
   }
   async function refresh(automatic = false) {
-    if (!config.url) { renderSummary(); return; }
+    const current = summarySession(), url = config.url, key = config.key;
+    if (!url || !current || current.local || (current.cloud && current.cloud !== url)) { renderSummary(); return; }
     if ($('refresh').disabled) return;
-    const current = active, url = config.url, key = config.key;
     summaryDue = false;
     nextSummaryAt = Date.now()+10000;
     $('refresh').disabled = true;
     try {
       const result = await api(config,'summary',{session:current.code,device:wireDevice({}).device});
-      if (active !== current || config.url !== url || config.key !== key) return;
+      if (summarySession() !== current || config.url !== url || config.key !== key) return;
       remote = result;
       if (view === 'scan') renderScan();
       renderSummary();
@@ -515,7 +681,7 @@
   }
   function exportSummary(extension) {
     const rows = C.exportRows(combined());
-    const name = C.filename(active.code,extension);
+    const name = C.filename(sessionName(summarySession()),extension);
     if (extension === 'csv') download(C.csv(rows.彙總),'text/csv;charset=utf-8',name);
     else {
       const book = XLSX.utils.book_new();
@@ -552,7 +718,8 @@
       dedupe:Math.max(0,Math.floor(Number($('dedupe').value) || 0)),beep:$('beep').checked,vibrate:$('vibrate').checked});
     save('config',config);
     showQueue();
-    showMaster();
+    if (view === 'start') storeChanged();
+    else showMaster();
     return true;
   }
   const scanner = window.InvScanner.create($('video'),handleScan,(running,torch,error) => {
@@ -563,6 +730,7 @@
     $('camera-note').textContent = error;
   });
   for (const tab of document.querySelectorAll('[data-view]')) tab.onclick = () => go(tab.dataset.view);
+  $('end-session').onclick = endActiveSession;
   $('switch').onclick = () => go('start');
   $('store').onchange = storeChanged;
   $('add-store').onclick = () => {
@@ -576,30 +744,17 @@
     storeChanged();
     $('custom-name').value = '';
   };
-  for (const radio of document.querySelectorAll('input[name="session-type"]')) radio.onchange = setSessionType;
-  for (const radio of document.querySelectorAll('input[name="mode"]')) radio.onchange = showMaster;
-  $('code').oninput = () => { lookupToken++; $('session-info').textContent = ''; showMaster(); };
-  $('code').onchange = () => {
-    if (chosen('session-type') === 'join' && C.clean($('code').value)) lookup(C.clean($('code').value).toUpperCase());
-  };
-  $('lookup').onclick = () => {
-    const code = C.clean($('code').value).toUpperCase();
-    if (code) lookup(code);
-    else $('code').focus();
+  for (const radio of document.querySelectorAll('input[name="mode"]')) radio.onchange = () => {
+    preferredMode = chosen('mode');
+    showMaster();
   };
   $('load-master').onclick = async () => {
     const store = $('store').value;
     if (store === '+') return toast('請先選擇門市');
     try {
-      if (chosen('session-type') === 'join') {
-        const code = C.clean($('code').value).toUpperCase();
-        await fetchMaster({code,store});
-      } else {
-        draftMaster = {store,items:(await api(config,'master',{store})).items,imported:false};
-        showMaster();
-      }
-    }
-    catch (error) { toast(error.message); }
+      draftMaster = {store,items:(await api(config,'master',{store})).items,imported:false};
+      showMaster();
+    } catch (error) { toast(error.message); }
   };
   $('master-file').onchange = async () => {
     const file = $('master-file').files[0], store = $('store').value;
@@ -626,9 +781,10 @@
     finally { $('master-file').value = ''; }
   };
   $('send-master').onclick = async () => {
-    const master = masters.get(active.code);
+    const master = active && masters.get(active.code);
+    if (!master || ending || !window.confirm('覆蓋場次主檔？')) return;
     try {
-      if (!master.pending) await useMaster({...master,pending:true});
+      await useMaster({...master,pending:true,overwrite:true});
       syncNow();
     } catch (error) { toast(error.message); }
   };
@@ -669,13 +825,13 @@
     catch (error) { $('ping-result').textContent = error.message; }
     finally { $('ping').disabled = false; }
   };
-  $('backup').onclick = () => download(JSON.stringify({device,deviceName:config.deviceName,lines:values(),sessions,masters:Object.fromEntries([...masters].map(([code,master]) => [code,master.items]))},null,2),
-    'application/json',C.filename(active ? active.code : '本機備份','json'));
+  $('rejected-backup').onclick = $('backup').onclick = () => download(JSON.stringify({device,deviceName:config.deviceName,lines:values(),sessions,masters:Object.fromEntries([...masters].map(([code,master]) => [code,master.items]))},null,2),
+    'application/json',C.filename(summarySession() ? sessionName(summarySession()) : '本機備份','json'));
   $('clear-lines').onclick = async () => {
     if (!window.confirm('確定清除本機已上傳資料？')) return;
     try {
       for (const line of values()) {
-        if (line.dirty || lines.get(line.id) !== line) continue;
+        if (line.dirty || line.rejected || lines.get(line.id) !== line) continue;
         const write = S.remove(line.id);
         await write;
         if (lines.get(line.id) === line) lines.delete(line.id);
@@ -691,7 +847,7 @@
     else syncNow(false);
   });
   window.addEventListener('pagehide',() => scanner.stop());
-  window.addEventListener('online',() => { showQueue(); syncNow(); });
+  window.addEventListener('online',async () => { showQueue(); if (!ending) await syncNow(); if (view === 'start') storeChanged(); });
   window.addEventListener('offline',showQueue);
   window.InventoryApp = {handleScan,syncNow,getState:() => ({
     active:active && {...active},lines:values().map(line => ({...line})),device,view,
@@ -699,9 +855,13 @@
   })};
   localReady.then(() => {
     $('ios-note').hidden = !ios && !/Line\//i.test(ua);
-    storeOptions(active && active.store);
-    $('counter').value = active ? active.counter : '';
-    if (active && active.mode === 'master') document.querySelector('input[name="mode"][value="master"]').checked = true;
+    storeOptions(summarySession() && summarySession().store);
+    $('counter').value = active ? active.counter : S.get('counter','');
+    if (active) preferredMode = active.mode;
+    const saved = active && sessions[active.code];
+    if (saved && (saved.status === '已結束' || (config.url && saved.pending && !saved.status))) {
+      closeSession(saved);
+    }
     storeChanged();
     identity();
     showQueue();

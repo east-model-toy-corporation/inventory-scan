@@ -14,7 +14,9 @@ function listen(server) {
 }
 async function start() {
   let gas = createGas();
-  let stats = {options:0,posts:0}, fail = false;
+  let stats = {options:0,posts:0}, fail = null, now;
+  class TestDate extends Date { static now() { return now ?? Date.now(); } }
+  gas.context.Date = TestDate;
   const app = http.createServer((req,res) => {
     const url = new URL(req.url,'http://localhost');
     const item = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -40,20 +42,29 @@ async function start() {
       json({...stats,detailRows:sheet ? sheet.getLastRow()-1 : 0}); return;
     }
     if (url.pathname === '/__reset' && req.method === 'POST') {
-      gas = createGas(); stats = {options:0,posts:0}; fail = false;
+      gas = createGas(); gas.context.Date = TestDate;
+      stats = {options:0,posts:0}; fail = null; now = undefined;
       json({ok:true}); return;
     }
-    if (url.pathname === '/__fail') { fail = url.searchParams.get('on') === '1'; json({ok:true,fail}); return; }
+    if (url.pathname === '/__clock') {
+      now = Date.parse(url.searchParams.get('time'));
+      if (!Number.isFinite(now)) { now = undefined; json({ok:false},400); }
+      else json({ok:true});
+      return;
+    }
+    if (url.pathname === '/__fail') { fail = url.searchParams.get('on') === '1' ? url.searchParams.get('action') || '*' : null; json({ok:true,fail}); return; }
     if (url.pathname !== apiPath) { json({ok:false},404); return; }
     if (req.method === 'POST') stats.posts++;
-    if (fail) { json({ok:false,error:'模擬連線失敗'},500); return; }
+    if (fail === '*') { json({ok:false,error:'模擬連線失敗'},500); return; }
     try {
       let output;
       if (req.method === 'GET') output = gas.context.doGet({parameter:Object.fromEntries(url.searchParams)});
       else if (req.method === 'POST') {
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);
-        output = gas.context.doPost({postData:{contents:Buffer.concat(chunks).toString('utf8'),type:req.headers['content-type']}});
+        const contents = Buffer.concat(chunks).toString('utf8');
+        if (fail && JSON.parse(contents).action === fail) { json({ok:false,error:'模擬連線失敗'},500); return; }
+        output = gas.context.doPost({postData:{contents,type:req.headers['content-type']}});
       } else { json({ok:false},405); return; }
       json(JSON.parse(output.getContent()));
     } catch (error) { json({ok:false,error:error.message},500); }

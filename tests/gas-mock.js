@@ -55,9 +55,10 @@ class Sheet {
   deleteRows(start,count) { this.rows.splice(start-1,count); }
 }
 
-function createGas({key = 'test-key',keyHash} = {}) {
+function createGas({key = 'test-key',keyHash, onLockWait} = {}) {
   const sheets = new Map();
   const props = new Map();
+  let locked = false;
   if (key) props.set('API_KEY',key);
   const spreadsheet = {
     getId: () => 'test-sheet',
@@ -69,7 +70,14 @@ function createGas({key = 'test-key',keyHash} = {}) {
     ContentService:{MimeType:{JSON:'application/json'},createTextOutput:content => ({
       getContent:() => content,setMimeType() { return this; }
     })},
-    LockService:{getScriptLock:() => ({waitLock() {},releaseLock() {}})},
+    LockService:{getScriptLock:() => ({
+      waitLock() {
+        if (onLockWait) onLockWait(locked);
+        if (locked) throw new Error('Lock already held');
+        locked = true;
+      },
+      releaseLock() { locked = false; }
+    })},
     PropertiesService:{getScriptProperties:() => ({
       getProperty:name => props.get(name) || null,setProperty:(name,value) => props.set(name,value)
     })},
