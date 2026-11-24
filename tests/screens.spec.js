@@ -11,6 +11,7 @@ test('capture iPhone 14 views and the session banner',async ({browser,server,bro
     await open(page,server);
     await page.locator('#counter').fill('林怡君');
     await expect(page.locator('#session-info')).toContainText('將建立新場次');
+    await page.locator('#zone').fill('公仔區 A-03');
     await capture('01-start');
     await page.getByLabel('有商品主檔（對照帳面）').check();
     await page.locator('#master-file').setInputFiles({name:'sample.csv',mimeType:'text/csv',buffer:Buffer.from(
@@ -31,6 +32,7 @@ test('capture iPhone 14 views and the session banner',async ({browser,server,bro
     await scan(page,'4904810049586','manual',7);
     await capture('02-scan-master');
     await page.getByRole('button',{name:'彙總',exact:true}).click();
+    await expect(page.getByRole('heading',{name:'依區域'})).toBeVisible();
     await capture('04-summary');
     await page.getByRole('button',{name:'切換',exact:true}).click();
     await configure(page,server);

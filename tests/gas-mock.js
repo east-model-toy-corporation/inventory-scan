@@ -24,6 +24,8 @@ class Sheet {
       row[j-1] = value;
     };
     const range = {
+      getColumn: () => c,
+      getNumColumns: () => nc,
       getValues: () => Array.from({length:nr},(_,i) => Array.from({length:nc},(_,j) => {
         const row = this.rows[r+i-1];
         return row && row[c+j-1] !== undefined ? row[c+j-1] : '';
@@ -51,6 +53,12 @@ class Sheet {
   clearContents() { this.rows = []; return this; }
   setFrozenRows(count) { this.frozen = count; return this; }
   insertColumnBefore(column) { this.rows.forEach(row => row.splice(column-1,0,'')); this.maxColumns++; }
+  moveColumns(range,destination) {
+    const start = range.getColumn();
+    const count = range.getNumColumns();
+    const index = destination > start ? destination - count - 1 : destination - 1;
+    this.rows.forEach(row => row.splice(index,0,...row.splice(start-1,count)));
+  }
   deleteColumn(column) { this.rows.forEach(row => row.splice(column-1,1)); this.maxColumns--; }
   deleteRows(start,count) { this.rows.splice(start-1,count); }
 }

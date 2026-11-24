@@ -22,7 +22,7 @@ test('setup creates and freezes the required headers',() => {
   const expected = {
     主檔:'場次 門市 條碼 品名 帳面數量 貨號',
     場次:'場次代碼 場次名稱 門市 模式 建立者 建立時間 狀態 結束時間 結束者',
-    刷讀明細:'時間 場次 門市 盤點人 裝置 條碼 品名 數量 id 更新時間 狀態',
+    刷讀明細:'時間 場次 門市 盤點人 區域 裝置 條碼 品名 數量 id 更新時間 狀態',
     彙總:'場次 門市 條碼 品名 帳面數量 實盤數量 差異 狀態 盤點人數 最後更新'
   };
   for (const [name,value] of Object.entries(expected)) {
@@ -30,19 +30,43 @@ test('setup creates and freezes the required headers',() => {
     assert.equal(gas.spreadsheet.getSheetByName(name).frozen,1);
   }
 });
-test('existing detail sheets retain rows and IDs when the old fourth column is removed',() => {
+for (const oldColumn of [null,'舊欄位','區域']) {
+  test('migrates detail rows and preserves IDs from layout: '+(oldColumn || '11 columns'),() => {
+    const gas = createGas();
+    const sheet = gas.spreadsheet.insertSheet('刷讀明細');
+    const header = '時間 場次 門市 盤點人 裝置 條碼 品名 數量 id 更新時間 狀態'.split(' ');
+    const row = ['2026-11-24 09:00:00',base.session,base.store,base.counter,base.device,
+      base.barcode,base.name,base.qty,base.id,base.updatedAt,'有效'];
+    if (oldColumn) { header.splice(3,0,oldColumn); row.splice(3,0,'A-01'); }
+    sheet.appendRow(header);
+    sheet.appendRow(row);
+    const migrated = summary(gas);
+    const zone = oldColumn === '區域' ? 'A-01' : '';
+    assert.equal(migrated.details[0].zone,zone);
+    assert.equal(migrated.totals.qty,2);
+    assert.equal(upload(gas,{...base,zone,qty:3,updatedAt:later}).acks[0].status,'updated');
+    gas.setup();
+    const detail = rows(gas,'刷讀明細');
+    assert.equal(detail.length,2);
+    assert.equal(detail[0].length,12);
+    assert.deepEqual(detail[1].slice(3),[base.counter,zone,base.device,base.barcode,base.name,3,base.id,later,'有效']);
+  });
+}
+test('details keep separate zone lines while barcode totals combine all zones',() => {
   const gas = createGas();
-  const sheet = gas.spreadsheet.insertSheet('刷讀明細');
-  sheet.appendRow('時間 場次 門市 舊欄位 盤點人 裝置 條碼 品名 數量 id 更新時間 狀態'.split(' '));
-  sheet.appendRow(['2026-11-24 09:00:00',base.session,base.store,'A',base.counter,base.device,
-    base.barcode,base.name,base.qty,base.id,base.updatedAt,'有效']);
-  assert.equal(summary(gas).totals.qty,2);
-  assert.equal(upload(gas,{...base,qty:3,updatedAt:later}).acks[0].status,'updated');
-  gas.setup();
-  const detail = rows(gas,'刷讀明細');
-  assert.equal(detail.length,2);
-  assert.equal(detail[0].length,11);
-  assert.deepEqual(detail[1].slice(3),[base.counter,base.device,base.barcode,base.name,3,base.id,later,'有效']);
+  const uploaded = upload(gas,base,{...base,id:'A2',zone:'001'},{...base,id:'A3',zone:'B-02'},
+    {...base,id:'bad-type',zone:1},{...base,id:'too-long',zone:'A'.repeat(101)});
+  assert.equal(uploaded.acks.length,3);
+  assert.equal(uploaded.rejected.length,2);
+  assert.equal(upload(gas,{...base,id:'A2',zone:'001',qty:5,updatedAt:later}).acks[0].status,'updated');
+  assert.equal(rows(gas,'刷讀明細')[2][4],'001');
+  const result = summary(gas);
+  assert.deepEqual(result.details.map(line => line.zone),['','001','B-02']);
+  assert.deepEqual(result.byZone,[
+    {zone:'未填區域',lines:1,qty:2},{zone:'001',lines:1,qty:5},{zone:'B-02',lines:1,qty:2}
+  ]);
+  assert.deepEqual(result.totals,{lines:3,qty:9,items:1});
+  assert.equal(result.items[0].countedQty,9);
 });
 test('upserts are idempotent, reject older versions and preserve Taipei time and barcode',() => {
   const gas = createGas();
@@ -50,7 +74,7 @@ test('upserts are idempotent, reject older versions and preserve Taipei time and
   assert.equal(upload(gas,base).acks[0].status,'unchanged');
   assert.equal(rows(gas,'刷讀明細').length,2);
   assert.equal(rows(gas,'刷讀明細')[1][0],'2026-11-24 09:00:00');
-  assert.equal(rows(gas,'刷讀明細')[1][5],'001234');
+  assert.equal(rows(gas,'刷讀明細')[1][6],'001234');
   assert.equal(upload(gas,{...base,qty:5,updatedAt:later}).acks[0].status,'updated');
   assert.deepEqual(upload(gas,base).acks[0],{id:base.id,updatedAt:later,status:'stale'});
   assert.equal(summary(gas).totals.qty,5);
@@ -61,7 +85,7 @@ test('deleted lines are excluded from totals and grouped summaries',() => {
   upload(gas,base,{...base,id:'B1',device:'乙',counter:'小陳',qty:3},
     {...base,id:'A2',barcode:'999',qty:10});
   upload(gas,{...base,id:'A2',barcode:'999',deleted:true,updatedAt:later});
-  assert.equal(rows(gas,'刷讀明細')[3][10],'已刪除');
+  assert.equal(rows(gas,'刷讀明細')[3][11],'已刪除');
   const result = summary(gas,'甲');
   assert.deepEqual(result.totals,{lines:2,qty:5,items:1});
   assert.deepEqual(result.byCounter,[{counter:'小林',lines:1,qty:2},{counter:'小陳',lines:1,qty:3}]);

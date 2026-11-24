@@ -20,7 +20,7 @@
     <header class="app-header">
       <div class="wrap">
         <div class="heading"><h1>條碼盤點</h1><span id="queue" class="badge" role="status"></span></div>
-        <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="end-session" type="button" hidden>結束盤點</button><button id="switch" type="button" hidden>切換</button></div>
+        <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="zone-chip" type="button" aria-haspopup="dialog" aria-controls="zone-dialog" hidden></button><button id="end-session" type="button" hidden>結束盤點</button><button id="switch" type="button" hidden>切換</button></div>
         <button id="rejected-backup" type="button" hidden>匯出本機備份</button><small id="sync-status"></small>
       </div>
     </header>
@@ -46,6 +46,8 @@
           </div>
           <div class="fields">
             <label>盤點人<input id="counter" required maxlength="100" autocomplete="name"></label>
+            <label>區域／貨架（選填）<input id="zone" maxlength="100" list="recent-zones" autocomplete="off"></label>
+            <datalist id="recent-zones"></datalist>
           </div>
         </fieldset>
         <fieldset class="panel stack">
@@ -163,6 +165,19 @@
     </section>
   </main>
   <div id="toast" role="status" hidden></div>
+  <div id="zone-overlay" hidden>
+    <div id="zone-dialog" role="dialog" aria-modal="true" aria-labelledby="zone-title" class="stack">
+      <h3 id="zone-title">變更區域</h3>
+      <form id="zone-form" class="stack">
+        <label>區域／貨架（選填）<input id="scan-zone" maxlength="100" list="recent-zones" autocomplete="off"></label>
+        <div class="actions">
+          <button class="primary" type="submit">確定</button>
+          <button id="clear-zone" type="button">清除</button>
+          <button id="cancel-zone" type="button">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <div id="unknown-overlay" hidden>
     <section id="unknown-dialog" role="dialog" aria-modal="true" aria-labelledby="unknown-title">
       <h2 id="unknown-title">主檔查無此商品</h2>

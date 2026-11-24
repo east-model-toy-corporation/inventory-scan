@@ -1,9 +1,10 @@
 const HEADERS = {
   主檔: ['場次','門市','條碼','品名','帳面數量','貨號'],
   場次: ['場次代碼','場次名稱','門市','模式','建立者','建立時間','狀態','結束時間','結束者'],
-  刷讀明細: ['時間','場次','門市','盤點人','裝置','條碼','品名','數量','id','更新時間','狀態'],
+  刷讀明細: ['時間','場次','門市','盤點人','區域','裝置','條碼','品名','數量','id','更新時間','狀態'],
   彙總: ['場次','門市','條碼','品名','帳面數量','實盤數量','差異','狀態','盤點人數','最後更新']
 };
+const DETAIL_ID_INDEX = HEADERS.刷讀明細.indexOf('id');
 const clean = value => String(value == null ? '' : value).trim();
 const stamp = value => new Date(value).toISOString();
 const taipeiTime = value => Utilities.formatDate(new Date(value),'Asia/Taipei','yyyy-MM-dd HH:mm:ss');
@@ -47,15 +48,25 @@ function sheets() {
         if (openStores.has(store)) sheet.getRange(i+1,7,1,3).setValues([['已結束',endedAt,'系統']]);
         openStores.add(store);
       }
-    } else if (name === '刷讀明細' && sheet.getLastColumn() >= headers.length + 1) {
-      const previous = sheet.getRange(1,1,1,headers.length + 1).getValues()[0];
-      // 舊版明細在門市後多一欄，刪除該欄即可保留原有資料與格式。
-      if (headers.every((header,index) => header === previous[index < 3 ? index : index + 1])) {
-        sheet.deleteColumn(4);
-      }
+    } else if (name === '刷讀明細') {
+      migrateDetails(sheet,headers);
     }
     return [name, sheet];
   }));
+}
+function migrateDetails(sheet, headers) {
+  const previous = sheet.getRange(1,1,1,sheet.getLastColumn()).getValues()[0];
+  const withoutZone = headers.filter(header => header !== '區域');
+  if (headers.every((header,index) => header === previous[index])) return;
+  const oldFourthColumn = withoutZone.every((header,index) => header === previous[index < 3 ? index : index + 1]);
+  if (oldFourthColumn && previous[3] === '區域') {
+    sheet.moveColumns(sheet.getRange(1,5),4);
+    return;
+  }
+  if (oldFourthColumn) sheet.deleteColumn(4);
+  else if (!withoutZone.every((header,index) => header === previous[index])) return;
+  sheet.insertColumnBefore(5);
+  sheet.getRange(1,5).setValue('區域').setFontWeight('bold').setBackground('#e5f1ee');
 }
 function setup() {
   return locked(() => {
@@ -147,16 +158,16 @@ function endSession(s,body) {
   }
   return {session:asSession(row)};
 }
-function asLine([createdAt,session,store,counter,device,barcode,name,qty,id,updatedAt,status]) {
+function asLine([createdAt,session,store,counter,zone,device,barcode,name,qty,id,updatedAt,status]) {
   if (typeof createdAt === 'string' && /^\d{4}-\d\d-\d\d /.test(createdAt)) {
     createdAt = stamp(createdAt.replace(' ', 'T') + '+08:00');
   }
-  return {createdAt,session,store,counter,device,barcode:barcodeText(barcode),name,qty:Number(qty),id,
+  return {createdAt,session,store,counter,zone:clean(zone),device,barcode:barcodeText(barcode),name,qty:Number(qty),id,
     updatedAt: stamp(updatedAt),deleted:status === '已刪除'};
 }
 function asRow(line) {
   return [taipeiTime(line.createdAt),
-    line.session,line.store,line.counter,line.device,line.barcode,line.name,line.qty,line.id,
+    line.session,line.store,line.counter,line.zone,line.device,line.barcode,line.name,line.qty,line.id,
     line.updatedAt,line.deleted ? '已刪除' : '有效'];
 }
 function itemStatus(bookQty, count) {
@@ -166,7 +177,7 @@ function itemStatus(bookQty, count) {
 }
 function calculateSummary(session, lines, master, device) {
   const compare = session && session.mode === 'master';
-  const groups = ['counter','device'];
+  const groups = ['counter','device','zone'];
   const buckets = groups.map(() => new Map());
   const items = new Map();
   const details = [], tombstones = [];
@@ -191,7 +202,7 @@ function calculateSummary(session, lines, master, device) {
     qty += line.qty;
     groups.forEach((key, index) => {
       const bucket = buckets[index];
-      const value = key === 'device' ? deviceId(line.device) : line[key];
+      const value = key === 'device' ? deviceId(line.device) : line[key] || '';
       if (key === 'device' && line.device.includes('｜')) deviceNames.set(value,line.device);
       if (!bucket.has(value)) bucket.set(value, {[key]:value, lines:0,qty:0});
       bucket.get(value).lines++;
@@ -202,8 +213,9 @@ function calculateSummary(session, lines, master, device) {
   if (compare) for (const product of master.values()) {
     if (!items.has(product.barcode)) items.set(product.barcode, {...product,countedQty:0,mineQty:0,counters:new Set(),updatedAt:''});
   }
-  const [byCounter,byDevice] = buckets.map(bucket => [...bucket.values()]);
-  return {session, totals, byCounter, byDevice:byDevice.map(row => ({...row,device:deviceNames.get(row.device) || row.device})), details, tombstones, updatedAt,
+  const [byCounter,byDevice,zones] = buckets.map(bucket => [...bucket.values()]);
+  const byZone = zones.map(row => ({...row,zone:row.zone || '未填區域'}));
+  return {session, totals, byCounter, byZone, byDevice:byDevice.map(row => ({...row,device:deviceNames.get(row.device) || row.device})), details, tombstones, updatedAt,
     items:[...items.values()].sort(byBarcode).map(({counters,...item}) => ({
       ...item, counterCount:counters.size, diff:item.bookQty === '' ? '' : item.countedQty - item.bookQty,
       status:compare ? itemStatus(item.bookQty,item.countedQty) : ''
@@ -238,6 +250,8 @@ function validateLine(raw) {
     line[key] = clean(raw[key]);
     if ((!line[key] && key !== 'name') || line[key].length > (key === 'barcode' ? 64 : 500)) throw new Error('欄位錯誤：' + key);
   }
+  if (raw.zone !== undefined && (typeof raw.zone !== 'string' || raw.zone.length > 100)) throw new Error('欄位錯誤：zone');
+  line.zone = clean(raw.zone);
   if (!Number.isInteger(raw.qty) || raw.qty < 0 || raw.qty > 999999) throw new Error('數量錯誤');
   if (raw.deleted !== undefined && typeof raw.deleted !== 'boolean') throw new Error('狀態錯誤');
   for (const key of ['createdAt','updatedAt']) {
@@ -249,7 +263,7 @@ function validateLine(raw) {
 function upload(s, body) {
   if (!Array.isArray(body.lines) || body.lines.length > 500) throw new Error('每次最多上傳 500 筆');
   const sheet = s.刷讀明細;
-  const lines = sheet.getDataRange().getValues().slice(1).map(row => row[8] ? asLine(row) : null);
+  const lines = sheet.getDataRange().getValues().slice(1).map(row => row[DETAIL_ID_INDEX] ? asLine(row) : null);
   const positions = new Map();
   lines.forEach((line,i) => { if (line) positions.set(line.id,i); });
   const ended = new Set(read(s.場次).filter(row => row[6] === '已結束').map(row => clean(row[0])));
@@ -279,7 +293,7 @@ function upload(s, body) {
     const start = sorted[i++];
     let end = start + 1;
     while (sorted[i] === end) { i++; end++; }
-    write(sheet,start+2,lines.slice(start,end).map(asRow),[1,2,6,9,10]);
+    write(sheet,start+2,lines.slice(start,end).map(asRow),[1,2,5,7,10,11]);
   }
   rebuild(s,lines.filter(Boolean));
   return {acks,rejected};
@@ -299,7 +313,7 @@ function route(s, body, post) {
         const row = read(s.場次).find(row => row[0] === clean(body.code));
         return {session:row ? asSession(row) : null};
       }
-      case 'summary': return rebuild(s,read(s.刷讀明細).filter(row => row[8]).map(asLine),clean(body.session),clean(body.device));
+      case 'summary': return rebuild(s,read(s.刷讀明細).filter(row => row[DETAIL_ID_INDEX]).map(asLine),clean(body.session),clean(body.device));
     }
   } else switch (body.action) {
     case 'upload': return upload(s,body);

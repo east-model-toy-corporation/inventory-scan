@@ -11,6 +11,7 @@
     url:'',key:'',deviceName:(ios ? (/iPhone/.test(ua) ? 'iPhone' : 'iPad') : /Android/.test(ua) ? 'Android' : '電腦')+'-'+device.slice(-4),
     dedupe:1500,beep:true,vibrate:true
   },S.get('config',{}));
+  let recentZones = S.get('zones',[]);
   let custom = S.get('stores',[]), sessions = S.get('sessions',{});
   let masters = new Map(), draftMaster, openPreview = null, lookingUp = false, ending = false, preferredMode = 'none';
   let lastSession = S.get('lastSession',null), syncing;
@@ -21,7 +22,7 @@
   let summaryDue = false, nextSummaryAt = 0;
   let lookupToken = 0, lastMutation = 0;
   const seen = new Map();
-  let qtyEdit, unknownScan, lastFeedback = null;
+  let qtyEdit, unknownScan, zoneOpen = false, lastFeedback = null;
   const interval = Math.max(200,Number(new URLSearchParams(location.search).get('syncInterval')) || 3000);
   const localReady = Promise.all([S.load(),S.loadMasters()]).then(async ([rows,records]) => {
     masters = records;
@@ -33,7 +34,7 @@
       try { await S.putMaster(record); }
       catch (error) { toast(error.message); }
     }
-    lines = new Map(rows.map(line => [line.id,line]));
+    lines = new Map(rows.map(line => [line.id,{...line,zone:line.zone || ''}]));
     for (const line of rows) lastMutation = Math.max(lastMutation,Date.parse(line.updatedAt) || 0);
   });
   const values = () => [...lines.values()];
@@ -105,7 +106,7 @@
     return line.device === device || line.device.startsWith(device+'｜');
   }
   function scope() {
-    return {session:active.code,store:active.store,counter:active.counter,device};
+    return {session:active.code,store:active.store,counter:active.counter,device,zone:active.zone || ''};
   }
   function wireDevice(line) {
     return {...line,device:device+'｜'+config.deviceName};
@@ -297,14 +298,49 @@
     showMaster();
     return result;
   }
+  function renderRecentZones() {
+    replace($('recent-zones'),...recentZones.map(zone => {
+      const option = node('option');
+      option.value = zone;
+      return option;
+    }));
+  }
+  function rememberZone(zone) {
+    $('zone').value = zone;
+    save('zone',zone);
+    if (zone) {
+      recentZones = [zone,...recentZones.filter(value => value !== zone)].slice(0,10);
+      save('zones',recentZones);
+      renderRecentZones();
+    }
+  }
+  function closeZone(zone) {
+    if (!zoneOpen) return;
+    if (zone !== undefined && active) {
+      if (zone !== (active.zone || '')) seen.clear();
+      active.zone = zone;
+      save('active',active);
+      rememberZone(zone);
+      identity();
+    }
+    zoneOpen = false;
+    $('zone-overlay').hidden = true;
+    refreshPause();
+    $('zone-chip').focus({preventScroll:true});
+  }
   function identity() {
     $('identity').textContent = active ? [sessionName(active),active.counter].join(' ／ ') : '尚未開始盤點';
+    const zoneLabel = '區域：'+(active && active.zone || '未填');
+    $('zone-chip').textContent = zoneLabel;
+    $('zone-chip').title = zoneLabel;
+    $('zone-chip').hidden = !active || view !== 'scan';
     $('switch').hidden = !active;
     $('end-session').hidden = !active || !['scan','summary'].includes(view);
   }
   function go(next) {
     if ((next === 'scan' && !active) || (next === 'summary' && !summarySession())) { toast('請先開始盤點'); return; }
     if (view === 'scan' && next !== 'scan') {
+      closeZone();
       finishQty();
       if (unknownScan) finishUnknown();
       scanner.stop();
@@ -332,6 +368,7 @@
     event.preventDefault();
     await localReady;
     const store = $('store').value, counter = C.clean($('counter').value), mode = preferredMode;
+    const zone = C.clean($('zone').value);
     if (!counter || store === '+') { toast('請填寫門市與盤點人'); return; }
     if ($('begin').disabled || ending) return;
     $('begin').disabled = true;
@@ -382,7 +419,8 @@
         }
       }
       if (draftMaster && draftMaster.store === store) draftMaster = null;
-      active = {...session,counter};
+      active = {...session,counter,zone};
+      rememberZone(zone);
       save('counter',counter);
       lastId = editingId = remote = null;
       summaryDue = false;
@@ -511,7 +549,7 @@
     return write.then(() => true,() => false);
   }
   async function handleScan(code,source = 'camera',qty = $('qty').valueAsNumber) {
-    if (!active || ending || view !== 'scan' || unknownScan || (qtyEdit && source === 'camera')) return false;
+    if (!active || ending || view !== 'scan' || zoneOpen || unknownScan || (qtyEdit && source === 'camera')) return false;
     const raw = C.clean(code);
     if (!raw || raw.length > 64 || !Number.isInteger(qty) || qty < 1 || qty > 999999) return false;
     const product = active.mode === 'master' && C.findProduct(C.masterIndex(itemsFor(active.code)),raw);
@@ -548,7 +586,7 @@
     return record(line);
   }
   function refreshPause() {
-    if (qtyEdit || unknownScan) scanner.pause();
+    if (qtyEdit || unknownScan || zoneOpen) scanner.pause();
     else scanner.resume();
     $('scan-paused').hidden = !qtyEdit;
     $('camera-preview').hidden = !qtyEdit && $('preview').hidden;
@@ -646,19 +684,21 @@
   }
   function renderScan() {
     if (!active) return;
-    const visible = values().filter(line => C.sameScope(line,scope()) && !line.deleted)
+    const current = scope();
+    const visible = values().filter(line => C.sameScope(line,{...current,zone:line.zone}) && !line.deleted)
       .sort((a,b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
-    $('scan-totals').textContent = '品項數 '+visible.length+' ／ 總件數 '+visible.reduce((n,line) => n+line.qty,0);
+    $('scan-totals').textContent = '品項數 '+new Set(visible.map(line => line.barcode)).size+' ／ 總件數 '+visible.reduce((n,line) => n+line.qty,0);
     const master = C.masterIndex(itemsFor(active.code));
     const compare = active.mode === 'master';
     const filter = C.clean($('filter-lines').value).toLowerCase();
-    const rows = visible.filter(line => (line.name+' '+line.barcode).toLowerCase().includes(filter)).map(line => {
+    const rows = visible.filter(line => (line.name+' '+line.barcode+' '+line.zone).toLowerCase().includes(filter)).map(line => {
       const product = compare && C.findProduct(master,line.barcode);
       const row = node('li');
       row.dataset.barcode = line.barcode;
       const title = node('div',null,'line-text');
       title.append(node('strong',product ? product.name || line.barcode : line.name || line.barcode));
       if (line.name || product) title.append(node('small',line.barcode));
+      if (line.zone) title.append(node('small',line.zone,'zone-tag'));
       if (compare && !product) title.append(node('small','主檔查無','unknown'));
       const actions = node('div',null,'line-actions');
       if (editingId === line.id) {
@@ -712,7 +752,7 @@
         (diff > 0 ? '+' : '')+diff+' '+C.itemStatus(product.bookQty,total),diff > 0 ? 'positive' : diff < 0 ? 'negative' : '']);
     }
     metrics(detail,counts);
-    replace($('last-details'),heading,...(compare ? [node('p',last.barcode)] : []),detail);
+    replace($('last-details'),heading,...(compare || last.zone ? [node('p',[compare ? last.barcode : '',last.zone].filter(Boolean).join(' ・ '))] : []),detail);
   }
   const summaryStatusClasses = {
     '盤盈':'surplus', '盤虧':'shortage', '相符':'matched', '主檔查無':'unknown', '未盤':'uncounted'
@@ -748,6 +788,7 @@
       (filter === 'diff' ? item.diff !== '' && item.diff !== 0 : item.status === filter));
     replace($('item-table'),table(C.itemRows(filtered),true));
     const groups = [['依盤點人',summary.byCounter,'counter','盤點人'],
+      ['依區域',summary.byZone,'zone','區域'],
       ['依裝置',summary.byDevice.map(row => ({...row,device:deviceLabel(row.device)})),'device','裝置']];
     replace($('summary-groups'),...groups.map(([title,rows,key,label]) => {
       const panel = node('div',null,'panel stack');
@@ -985,19 +1026,35 @@
       if (line) update(line,line.qty+Number(control.dataset.adjust));
     };
   }
+  $('zone-chip').onclick = () => {
+    if (!active || unknownScan || ending) return;
+    finishQty();
+    zoneOpen = true;
+    refreshPause();
+    $('scan-zone').value = active.zone || '';
+    $('zone-overlay').hidden = false;
+    $('scan-zone').focus();
+  };
+  $('zone-form').onsubmit = event => {
+    event.preventDefault();
+    closeZone(C.clean($('scan-zone').value));
+  };
+  $('clear-zone').onclick = () => closeZone('');
+  $('cancel-zone').onclick = () => closeZone();
   $('search-master').onclick = () => showMasterSearch(true);
   $('back-to-choices').onclick = () => showMasterSearch(false);
   $('count-unknown').onclick = () => finishUnknown(true);
   $('cancel-unknown').onclick = $('cancel-search').onclick = () => finishUnknown();
   $('master-query').oninput = renderMasterResults;
   document.addEventListener('keydown',event => {
-    if (!unknownScan) return;
+    if (!unknownScan && !zoneOpen) return;
     if (event.key === 'Escape') {
       event.preventDefault();
-      finishUnknown();
+      if (zoneOpen) closeZone();
+      else finishUnknown();
     }
     if (event.key === 'Tab') {
-      const pane = $($('unknown-search').hidden ? 'unknown-choices' : 'unknown-search');
+      const pane = $(zoneOpen ? 'zone-dialog' : $('unknown-search').hidden ? 'unknown-choices' : 'unknown-search');
       const controls = [...pane.querySelectorAll('button,input')];
       const edge = event.shiftKey ? controls[0] : controls[controls.length-1];
       if (document.activeElement === edge || !pane.contains(document.activeElement)) {
@@ -1052,13 +1109,15 @@
   window.addEventListener('offline',showQueue);
   window.InventoryApp = {handleScan,syncNow,getState:() => ({
     active:active && {...active},lines:values().map(line => ({...line})),device,view,
-    lastFeedback,dialogOpen:!!unknownScan,scannerPaused:!!(qtyEdit || unknownScan),
+    lastFeedback,dialogOpen:!!unknownScan,scannerPaused:!!(qtyEdit || unknownScan || zoneOpen),
     pending:values().filter(line => line.dirty).length
   })};
   localReady.then(() => {
     $('ios-note').hidden = !ios && !/Line\//i.test(ua);
     storeOptions(summarySession() && summarySession().store);
     $('counter').value = active ? active.counter : S.get('counter','');
+    $('zone').value = S.get('zone',active && active.zone || '');
+    renderRecentZones();
     if (active) preferredMode = active.mode;
     const saved = active && sessions[active.code];
     if (saved && (saved.status === '已結束' || (config.url && saved.pending && !saved.status))) {

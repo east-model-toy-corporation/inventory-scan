@@ -210,9 +210,63 @@ test('pending session master survives a reload and uploads after cloud recovery'
   await queue(page,0);
 });
 
+test('optional zone changes apply only to subsequent scans and persist on the start screen',async ({page,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  await page.locator('#zone').fill('A-01');
+  await begin(page);
+  await scan(page,'000123','camera');
+  const chip = page.locator('#zone-chip');
+  const zoneDialog = page.getByRole('dialog',{name:'變更區域'});
+  await expect(chip).toHaveText('區域：A-01');
+  await chip.click();
+  await zoneDialog.locator('#scan-zone').fill('B-02');
+  await zoneDialog.getByRole('button',{name:'確定',exact:true}).click();
+  await scan(page,'000123','camera');
+  await expect(page.locator('#lines li')).toHaveCount(2);
+  await expect(page.locator('#lines li').first()).toContainText('B-02');
+  await expect(page.locator('#lines li').last()).toContainText('A-01');
+  await chip.click();
+  await zoneDialog.locator('#scan-zone').fill('取消的區域');
+  await zoneDialog.getByRole('button',{name:'取消'}).click();
+  await expect(chip).toHaveText('區域：B-02');
+  await chip.click();
+  await zoneDialog.getByRole('button',{name:'清除'}).click();
+  await expect(chip).toHaveText('區域：未填');
+  await scan(page,'000123');
+  await queue(page,0);
+  const code = (await active(page)).code;
+  const cloud = await fetch(sessionApi(server,'summary',code)).then(response => response.json());
+  expect(cloud.details.map(line => line.zone).sort()).toEqual(['','A-01','B-02']);
+  await summary(page);
+  await button(page,'重新整理').click();
+  const zones = page.locator('#summary-groups .panel').filter({has:page.getByRole('heading',{name:'依區域'})});
+  await expect(zones.locator('tbody tr')).toHaveCount(3);
+  for (const zone of ['A-01','B-02','未填區域']) await expect(zones.getByRole('cell',{name:zone,exact:true})).toBeVisible();
+
+  const pending = page.waitForEvent('download');
+  await button(page,'匯出 Excel').click();
+  const book = XLSX.read(await fs.readFile(await (await pending).path()));
+  const details = XLSX.utils.sheet_to_json(book.Sheets.明細,{header:1});
+  expect(details[0][4]).toBe('區域');
+  expect(details.slice(1).map(row => row[4]).sort()).toEqual(['','A-01','B-02']);
+
+  await button(page,'刷讀').click();
+  await chip.click();
+  await zoneDialog.locator('#scan-zone').fill('B-02');
+  await zoneDialog.getByRole('button',{name:'確定',exact:true}).click();
+  await page.reload();
+  await expect(chip).toHaveText('區域：B-02');
+  await button(page,'設定開始').click();
+  await expect(page.locator('#zone')).toHaveValue('B-02');
+  await expect(page.locator('#recent-zones option')).toHaveCount(2);
+});
+
 test('downloads contain expected spreadsheet cells and CSV BOM',async ({page,server}) => {
   await open(page,server);
+  await expect(page.locator('#zone')).toHaveValue('');
   await begin(page);
+  await expect(page.locator('#zone-chip')).toHaveText('區域：未填');
   await scan(page,'000123','manual',12);
   await summary(page);
   for (const [name,extension] of [['匯出 Excel','xlsx'],['匯出 CSV','csv']]) {
@@ -223,12 +277,13 @@ test('downloads contain expected spreadsheet cells and CSV BOM',async ({page,ser
     const data = await fs.readFile(await download.path());
     if (extension === 'xlsx') {
       const book = XLSX.read(data);
-      expect(book.SheetNames).toEqual(['彙總','明細','依人員']);
+      expect(book.SheetNames).toEqual(['彙總','明細','依人員','依區域']);
       expect(book.Sheets.彙總.A2.v).toBe('000123');
       expect(book.Sheets.彙總.D2.v).toBe(12);
       expect(XLSX.utils.sheet_to_json(book.Sheets.明細,{header:1})[0]).toEqual(
-        ['時間','場次名稱','門市','盤點人','裝置','條碼','品名','數量']);
-      expect(book.Sheets.明細.H2.v).toBe(12);
+        ['時間','場次名稱','門市','盤點人','區域','裝置','條碼','品名','數量']);
+      expect(book.Sheets.明細.I2.v).toBe(12);
+      expect(book.Sheets.依區域.A2.v).toBe('未填區域');
       expect(book.Sheets.明細.B2.v).toBe((await active(page)).name);
       expect(book.Sheets.彙總.G2.v).toBe((await active(page)).name);
     } else {

@@ -41,6 +41,20 @@ test('upsertScan increments the existing line only within its scope',() => {
   assert.equal(otherCounter.qty,1);
 });
 
+test('scans accumulate by zone and legacy lines belong to the blank zone',() => {
+  const scope = {session:'S1',store:'萬年總店',counter:'小林',device:'D1'};
+  const legacy = C.upsertScan([],scope,'123','模型',1,1000);
+  delete legacy.zone;
+  const blank = C.upsertScan([legacy],{...scope,zone:''},'123','模型',1,2000);
+  const first = C.upsertScan([blank],{...scope,zone:'A-01'},'123','模型',2,3000);
+  const second = C.upsertScan([blank,first],{...scope,zone:'B-02'},'123','模型',3,4000);
+  const again = C.upsertScan([blank,first,second],{...scope,zone:'A-01'},'123','模型',4,5000);
+  assert.equal(blank.id,legacy.id);
+  assert.equal(new Set([blank.id,first.id,second.id]).size,3);
+  assert.equal(again.id,first.id);
+  assert.equal(again.qty,6);
+});
+
 test('sessionCode includes store prefix, local MMDD and an unambiguous suffix',() => {
   const date = new Date(2026,10,24);
   assert.match(C.sessionCode('萬年總店',date),/^WN-1124-[A-HJ-NP-Z2-9]{3}$/);

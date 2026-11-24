@@ -26,10 +26,13 @@ for (const {name,width,height,scale,file} of sizes) {
         buffer:Buffer.from('條碼,品名,帳面數量\n4904810049586,模型汽車,5\nB2,模型火車,9\nC3,模型飛機,7')
       });
       await expect(page.locator('#master-count')).toHaveText('已載入 3 筆');
+      await page.locator('#zone').fill('A-03');
       await begin(page);
       await page.getByRole('button',{name:'開啟鏡頭'}).click();
       const body = page.locator('body');
       const qty = page.locator('#last-qty');
+      const chip = page.getByRole('button',{name:'區域：A-03'});
+      await expect(chip).toBeVisible();
       await expect(body).toHaveClass(/\bscan-compact\b/);
       await expect(qty).toHaveValue(/^\d+$/);
       await expect(page.locator('#last-details')).toContainText('4904810049586');
@@ -43,6 +46,10 @@ for (const {name,width,height,scale,file} of sizes) {
         }
       };
       await measure();
+      const header = await page.locator('.app-header').boundingBox();
+      const zone = await chip.boundingBox();
+      expect(zone.x + zone.width).toBeLessThanOrEqual(width);
+      expect(zone.y + zone.height).toBeLessThanOrEqual(header.y + header.height);
       await page.screenshot({path:path.join(__dirname,'../screens',file),fullPage:false});
 
       await qty.focus();

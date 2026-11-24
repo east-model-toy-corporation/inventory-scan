@@ -177,3 +177,22 @@ body:not(.scan-compact) #scan-placeholder,body:not(.scan-compact) .compact-metri
 #master-results p { margin:0 }
 #back-to-choices,.master-result { text-align:left }
 .master-result { display:grid; gap:4px; padding:8px 12px; overflow-wrap:anywhere }
+
+#zone-chip {
+  min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; border-radius:999px; background:#e8f4ee;
+}
+.scan-compact #zone-chip { max-width:26%; flex:none }
+.line-text .zone-tag {
+  display:inline-block; max-width:100%; border-radius:6px; padding:1px 5px;
+  background:#e8f4ee;
+}
+#zone-overlay {
+  position:fixed; inset:var(--vv-top,0px) 0 auto; z-index:20;
+  display:grid; place-items:center; height:100vh; height:var(--vvh,100svh);
+  padding:12px; background:#152b2770;
+}
+#zone-dialog {
+  width:min(100%,360px); max-height:100%; overflow:auto; background:#fff;
+  border-radius:14px; padding:14px;
+}

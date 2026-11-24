@@ -51,12 +51,12 @@
     }
     return [...items.values()];
   }
-  const sameScope = (line, scope) => ['session','store','counter','device'].every(key => line[key] === scope[key]);
+  const sameScope = (line, scope) => ['session','store','counter','device'].every(key => line[key] === scope[key]) && (line.zone || '') === (scope.zone || '');
   function upsertScan(lines, scope, barcode, name, qty, now = Date.now()) {
     const old = lines.find(line => !line.deleted && line.barcode === barcode && sameScope(line,scope));
-    if (old) return editLine(old,{qty:old.qty+qty,name:name || old.name},now);
+    if (old) return editLine(old,{zone:old.zone || '',qty:old.qty+qty,name:name || old.name},now);
     const createdAt = new Date(now).toISOString();
-    return {...scope,id:scope.device+'-'+now.toString(36)+'-'+random(8),barcode,name,qty,
+    return {...scope,zone:scope.zone || '',id:scope.device+'-'+now.toString(36)+'-'+random(8),barcode,name,qty,
       createdAt,updatedAt:createdAt,deleted:false,dirty:true};
   }
   function editLine(line, patch, now = Date.now()) {
@@ -80,7 +80,7 @@
   const deviceId = value => value.split('｜',1)[0];
   function summarize(session, lines, master, device) {
     const compare = session.mode === 'master';
-    const groups = ['counter','device'];
+    const groups = ['counter','device','zone'];
     const buckets = groups.map(() => new Map());
     const items = new Map();
     const details = lines.filter(line => line.session === session.code && !line.deleted);
@@ -96,7 +96,7 @@
       if (deviceId(line.device) === deviceId(device)) item.mineQty += line.qty;
       qty += line.qty;
       groups.forEach((key,index) => {
-        const value = key === 'device' ? deviceId(line.device) : line[key];
+        const value = key === 'device' ? deviceId(line.device) : line[key] || '';
         if (key === 'device' && line.device.includes('｜')) deviceNames.set(value,line.device);
         const bucket = buckets[index];
         if (!bucket.has(value)) bucket.set(value,{[key]:value,lines:0,qty:0});
@@ -108,8 +108,9 @@
     if (compare) for (const product of master.values()) {
       if (!items.has(product.barcode)) items.set(product.barcode,{...product,countedQty:0,mineQty:0});
     }
-    const [byCounter,byDevice] = buckets.map(bucket => [...bucket.values()]);
-    return {session,totals,byCounter,byDevice:byDevice.map(row => ({...row,device:deviceNames.get(row.device) || row.device})),details,
+    const [byCounter,byDevice,zones] = buckets.map(bucket => [...bucket.values()]);
+    const byZone = zones.map(row => ({...row,zone:row.zone || '未填區域'}));
+    return {session,totals,byCounter,byZone,byDevice:byDevice.map(row => ({...row,device:deviceNames.get(row.device) || row.device})),details,
       items:[...items.values()].sort((a,b) => a.barcode.localeCompare(b.barcode)).map(item => ({
         ...item,diff:item.bookQty === '' ? '' : item.countedQty-item.bookQty,
         status:compare ? itemStatus(item.bookQty,item.countedQty) : ''
@@ -123,9 +124,10 @@
     const [head,...items] = itemRows(summary.items);
     return {
       彙總:[[...head,'場次名稱'],...items.map(row => [...row,name])],
-      明細:[['時間','場次名稱','門市','盤點人','裝置','條碼','品名','數量'],...summary.details.map(line =>
-        [line.createdAt,name,line.store,line.counter,line.device,line.barcode,line.name,line.qty])],
-      依人員:groupRows(summary.byCounter,'counter','盤點人')
+      明細:[['時間','場次名稱','門市','盤點人','區域','裝置','條碼','品名','數量'],...summary.details.map(line =>
+        [line.createdAt,name,line.store,line.counter,line.zone || '',line.device,line.barcode,line.name,line.qty])],
+      依人員:groupRows(summary.byCounter,'counter','盤點人'),
+      依區域:groupRows(summary.byZone,'zone','區域')
     };
   }
   function csv(rows) {
