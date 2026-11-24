@@ -1,0 +1,43 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>示意：刷到即改數量</title><link rel="stylesheet" href="../css/app.css">
+<style>
+.cam{position:relative;height:200px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#3a4744,#121816 75%)}
+.cam .frame{position:absolute;left:12%;right:12%;top:32%;height:36%;border:3px solid #7ff0c4;border-radius:10px;box-shadow:0 0 0 999px rgba(0,0,0,.35)}
+.cam .laser{position:absolute;left:14%;right:14%;top:50%;height:2px;background:#ff5a4f;box-shadow:0 0 8px #ff5a4f}
+.cam .tag{position:absolute;left:10px;top:10px;color:#fff;font-size:.8rem;background:rgba(0,0,0,.45);padding:4px 8px;border-radius:999px}
+.cam.paused .laser{display:none}.cam.paused .frame{border-color:#f4c04a}
+.pause{position:absolute;inset:auto 0 0 0;background:rgba(244,192,74,.95);color:#3b2a00;font-weight:800;text-align:center;padding:8px}
+.camrow{display:flex;gap:8px;margin-top:10px}.camrow button{flex:1;min-height:44px;border-radius:10px;border:1px solid var(--border);background:#fff;font-weight:700}
+.card{margin-top:12px;background:#e8f4ee;border:1px solid #a5c9b9;border-radius:14px;padding:14px}
+.card.editing{border:2px solid var(--green);background:#fff}
+.card h3{font-size:1.2rem}.card .code{color:var(--muted);font-size:.9rem;margin:2px 0 8px}
+.meta{display:flex;gap:16px;font-size:.85rem;color:var(--muted)}.meta b{display:block;font-size:1.1rem;color:var(--ink)}
+.qty{display:grid;grid-template-columns:56px 1fr 56px;gap:8px;margin-top:12px}
+.qty button{min-height:56px;font-size:1.6rem;border-radius:12px;border:1px solid var(--border);background:#fff;font-weight:800}
+.qty input{min-height:56px;font-size:1.8rem;text-align:center;font-weight:800;border-radius:12px;border:1px solid var(--border);width:100%}
+.editing .qty input{border:3px solid var(--green);outline:none}
+.quick{display:flex;gap:8px;margin-top:8px}.quick button{flex:1;min-height:44px;border-radius:10px;border:1px solid var(--border);background:#fff;font-weight:700}
+.ok{margin-top:12px;width:100%;min-height:52px;border:0;border-radius:12px;background:var(--green);color:#fff;font-size:1.05rem;font-weight:800}
+.hint{font-size:.8rem;color:var(--muted);margin-top:8px}
+.diff{color:var(--green);font-weight:800}
+</style></head><body>
+<header class="app-header"><div class="wrap"><div class="heading"><h1>條碼盤點</h1><span class="badge">待上傳 0 筆</span></div>
+<div class="session-bar"><span>武昌 2026/11/30 ／ 林怡君</span></div></div></header>
+<main class="wrap" style="padding-top:12px">
+<div class="cam" id="cam"><div class="frame"></div><div class="laser"></div><span class="tag">● 連續掃描中</span><div class="pause" id="pause" hidden>⏸ 辨識暫停中・改完按「確定，繼續掃描」</div></div>
+<div class="camrow"><button>停止鏡頭</button><button>切換前後鏡頭</button></div>
+<section class="card" id="card"><p class="hint" style="margin:0 0 6px">剛刷到的商品</p>
+<h3>合金工程車</h3><p class="code">4904810049586</p>
+<div class="meta"><span>帳面<b>20</b></span><span>本機已盤<b id="mine">1</b></span><span>差異<b class="diff" id="diff" style="color:var(--red)">-19 盤虧</b></span></div>
+<div class="qty"><button>−</button><input id="q" value="1" inputmode="numeric"><button>＋</button></div>
+<div class="quick"><button>+5</button><button>+10</button><button>+12</button></div>
+<button class="ok" id="ok" hidden>確定，繼續掃描</button>
+<p class="hint" id="hint">點數量可直接輸入總數；按 −／＋ 或快速鍵不會暫停鏡頭</p></section>
+</main>
+<script>
+if(location.hash==='#edit'){document.getElementById('cam').classList.add('paused');document.getElementById('pause').hidden=false;
+document.querySelector('.tag').textContent='⏸ 已暫停';document.getElementById('card').classList.add('editing');
+const q=document.getElementById('q');q.value='20';q.focus();document.getElementById('ok').hidden=false;
+document.getElementById('mine').textContent='20';const d=document.getElementById('diff');d.textContent='0 相符';d.style.color='var(--muted)';
+document.getElementById('hint').textContent='輸入完成後按確定，鏡頭會自動恢復辨識';}
+</script></body></html>
