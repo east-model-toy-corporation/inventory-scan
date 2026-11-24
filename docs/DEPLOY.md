@@ -40,3 +40,9 @@
 舊版「場次」分頁會自動加入「結束時間」與「結束者」。若同一門市原有多個進行中場次，系統會保留最後新增的場次為進行中，並結束該門市其餘場次。仍可依場次查詢所有既有明細。
 
 升級前尚未在雲端建立的舊版場次，可使用「匯出本機備份」保留資料。新盤點從門市選擇畫面開始。
+
+## 自動部署腳本（box 上）
+1. `clasp login`（buyer@ehobby.com.tw）。
+2. `bash scripts/deploy-gas.sh`：第一次會建立新試算表「條碼盤點紀錄」與綁定的 Apps Script，推送 Code.gs／appsscript.json／Config.gs（只含金鑰的 SHA-256，不含金鑰本身），建立網頁應用程式部署；之後再執行會更新同一個部署（網址不變）。網址等資訊寫在 `secrets/deploy_info.json`。
+3. 第一次部署後，用 buyer 帳號開啟 Apps Script 編輯器，執行 `setup` 並同意授權（試算表權限）。
+4. `bash scripts/smoke-prod.sh`：用「測試門市」實測 ping、錯誤金鑰、建立／加入場次、上傳、重送不重複、彙總、結束場次、結束後拒絕寫入。
