@@ -1,0 +1,24 @@
+{
+  "name": "inventory_scan",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/ && playwright test",
+    "test:gas": "node --test tests/",
+    "test:e2e": "playwright test",
+    "serve": "node tests/mock-server.js",
+    "fixtures": "ffmpeg -y -loglevel error -f lavfi -i color=white:s=1280x720 -i tests/fixtures/ean13.png -filter_complex '[0][1]overlay=(W-w)/2:(H-h)/2,format=yuv420p' -frames:v 30 tests/fixtures/ean13.y4m"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@zxing/library": "^0.23.0",
+    "bwip-js": "^4.11.4",
+    "playwright": "^1.65.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+  }
+}

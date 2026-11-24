@@ -1,0 +1,9 @@
+node_modules/
+test-results/
+playwright-report/
+tests/fixtures/*.y4m
+*.log
+brief*.md
+secrets/
+deploy/
+.clasp.json

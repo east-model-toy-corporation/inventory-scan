@@ -1,0 +1,10 @@
+{
+  "name": "條碼盤點",
+  "short_name": "條碼盤點",
+  "lang": "zh-Hant-TW",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f6f4",
+  "theme_color": "#10352f"
+}
