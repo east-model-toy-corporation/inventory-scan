@@ -14,12 +14,20 @@ test('capture iPhone 14 views and the session banner',async ({browser,server,bro
     await capture('01-start');
     await page.getByLabel('有商品主檔（對照帳面）').check();
     await page.locator('#master-file').setInputFiles({name:'sample.csv',mimeType:'text/csv',buffer:Buffer.from(
-      '條碼,品名,帳面數量\n0490481004958,太空探測車模型,8\n4904810049586,合金工程車,4\n4904810222333,組裝機器人,6'
+      '條碼,品名,帳面數量\n0490481004958,太空探測車模型,8\n4904810049586,合金工程車模型,4\n4904810222333,組裝機器人模型,6'
     )});
     await expect(page.locator('#master-count')).toHaveText('已載入 3 筆');
     await begin(page,{counter:'林怡君'});
     await scan(page,'0490481004958','manual',6);
     await scan(page,'UNLISTED-01','manual',2);
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await capture('10-not-in-master');
+    await page.getByRole('button',{name:'用品名搜尋'}).click();
+    await page.locator('#master-query').fill('模型');
+    await expect(page.locator('.master-result')).toHaveCount(3);
+    await capture('11-name-search');
+    await page.getByRole('button',{name:'← 返回'}).click();
+    await page.getByRole('button',{name:'直接計入',exact:true}).click();
     await scan(page,'4904810049586','manual',7);
     await capture('02-scan-master');
     await page.getByRole('button',{name:'彙總',exact:true}).click();

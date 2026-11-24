@@ -3,7 +3,7 @@
 手機或電腦都可使用。支援手機相機連續刷讀、USB／藍牙掃描槍、手動批次輸入、Excel／CSV 商品主檔、離線暫存，以及透過 Google 試算表跨裝置彙總。
 
 1. 在「設定開始」選擇門市並填寫盤點人。有進行中的場次時會自動加入，並沿用該場次的模式。建立新場次時可選擇模式並匯入 Excel／CSV。有主檔模式的場次若尚無主檔，加入者也可匯入。雲端主檔會在同門市、同場次的裝置間共享。
-2. 在「刷讀」開啟鏡頭，或將條碼輸入後按 Enter。點選明細數量可修改。
+2. 在「刷讀」開啟鏡頭，或將條碼輸入後按 Enter。「數量」可指定下一次刷讀的件數，計入後會回到 1。最近刷讀卡可直接修改該筆總數，也可用 −、＋、+5、+10、+12 快速調整。輸入總數時會暫停辨識，確認後繼續掃描。有主檔模式若查無條碼，可依品名、條碼或貨號搜尋，或選擇直接計入、取消。
 3. 在「彙總」重新整理全場資料，並匯出 Excel（彙總、明細、依人員）或 CSV。在「設定」可下載本機 JSON 備份。
 4. 跨裝置盤點時，各裝置填入相同的 API 網址與金鑰，再選擇同一門市。場次以門市及台北開始日期命名，跨日會沿用原場次。按「結束盤點」後，再選該門市就會開新場次。上一場仍可從「彙總」查看和匯出。
 5. 設定雲端後，離線時可繼續本機已快取的進行中場次。離線確認結束後，結束指令會在恢復連線時同步。若場次已被結束而明細未能上傳，可按「匯出本機備份」保留明細。未設定雲端時，各門市的場次由此裝置管理。
@@ -18,6 +18,6 @@
 - `npm test` 依序執行 Node.js 和 Playwright 的完整測試。
 - `npm run serve` 啟動前端和模擬 API，並印出兩個網址。測試 API 金鑰為 `test-key`。
 
-螢幕截圖儲存在 [screens/](screens/)。執行 `npx playwright test tests/screens.spec.js --project=webkit` 可重拍七張 iPhone 14 介面截圖，包含「結束盤點」按鈕。執行 `npx playwright test tests/camera.spec.js --project=chromium-camera` 可重拍 ZXing 辨識條碼後的 `07-camera-scan.png`。
+螢幕截圖儲存在 [screens/](screens/)。執行 `npx playwright test tests/screens.spec.js --project=webkit` 可重拍九張 iPhone 14 介面截圖，包含「結束盤點」、主檔查無提示和品名搜尋。執行 `npx playwright test tests/camera.spec.js --project=chromium-camera` 可重拍 ZXing 辨識條碼後的 `07-camera-scan.png` 與 `09-quick-qty.png`。
 
 [部署說明](docs/DEPLOY.md)

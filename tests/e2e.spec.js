@@ -142,6 +142,7 @@ test('Excel, CSV and cloud master preserve barcodes and render comparisons',asyn
   await expect(page.locator('#last-scan')).toContainText('帳面5');
   await expect(page.locator('#last-scan')).toContainText('差異-3 盤虧');
   await scan(page,'UNKNOWN');
+  await page.getByRole('button',{name:'直接計入',exact:true}).click();
   await expect(page.locator('#last-scan')).toContainText('主檔查無');
   await queue(page,0);
   await summary(page);

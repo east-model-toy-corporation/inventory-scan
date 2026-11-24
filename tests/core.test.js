@@ -52,3 +52,14 @@ test('csv starts with a UTF-8 BOM and retains leading zeros and escaped fields',
   assert.deepEqual([...Buffer.from(csv).subarray(0,3)],[0xef,0xbb,0xbf]);
   assert.equal(csv,'\uFEFF條碼,品名\r\n000123,"模型,""甲"""');
 });
+
+test('searchMaster matches all terms across name, barcode and SKU and caps results',() => {
+  const first = {name:'Tomica 合金工程車',barcode:'4904810049586',sku:'ENG-A'};
+  const second = {name:'Tomica 合金消防車',barcode:'4904810049807',sku:'FIRE-B'};
+  const items = [first,second];
+  assert.deepEqual(C.searchMaster(items,'  tOmIcA  工程 '),[first]);
+  assert.deepEqual(C.searchMaster(items,'0498 fire-b'),[second]);
+  assert.deepEqual(C.searchMaster(items,'合金',1),[first]);
+  assert.deepEqual(C.searchMaster(items,'工程 FIRE-B'),[]);
+  assert.deepEqual(C.searchMaster(items,'  '),[]);
+});

@@ -65,8 +65,11 @@
     </section>
     <section id="scan" hidden>
       <h2>刷讀</h2>
-      <div class="panel stack">
-        <div id="preview" hidden><video id="video" playsinline muted autoplay></video><div class="guide"></div></div>
+      <div class="panel stack" id="camera-panel">
+        <div id="camera-preview" class="camera-preview" hidden>
+          <div id="preview" hidden><video id="video" playsinline muted autoplay></video><div class="guide"></div></div>
+          <div id="scan-paused" role="status" hidden>⏸ 辨識暫停中・改完按「確定，繼續掃描」</div>
+        </div>
         <div class="actions">
           <button id="camera">開啟鏡頭</button>
           <button id="flip">切換前後鏡頭</button>
@@ -74,6 +77,24 @@
         </div>
         <small id="camera-note" role="status"></small>
         <small id="ios-note" hidden>請用 Safari 開啟。若從 LINE 內建瀏覽器開啟，請改用 Safari。</small>
+      </div>
+      <div id="last-scan" class="panel last" hidden>
+        <div id="last-details" aria-live="polite"></div>
+        <div id="last-controls">
+          <div class="last-qty">
+            <button type="button" data-adjust="-1" aria-label="減少一件">−</button>
+            <input id="last-qty" inputmode="numeric" autocomplete="off" aria-label="最近刷讀總數">
+            <button type="button" data-adjust="1" aria-label="增加一件">＋</button>
+          </div>
+          <div class="quick-qty">
+            <button type="button" data-adjust="5">+5</button>
+            <button type="button" data-adjust="10">+10</button>
+            <button type="button" data-adjust="12">+12</button>
+          </div>
+          <button id="confirm-qty" type="button" class="primary" hidden>確定，繼續掃描</button>
+        </div>
+      </div>
+      <div class="panel stack">
         <form id="scan-form" class="manual">
           <label>條碼<input id="barcode" type="text" inputmode="numeric" maxlength="64" autocomplete="off" autocapitalize="off" spellcheck="false" required></label>
           <label>數量<input id="qty" type="number" inputmode="numeric" min="1" max="999999" step="1" value="1" required></label>
@@ -81,7 +102,7 @@
         </form>
         <small id="scan-note" role="status"></small>
       </div>
-      <div id="last-scan" class="panel last" hidden aria-live="polite"></div>
+
       <div class="panel stack">
         <div class="heading"><h3>刷讀明細</h3><small id="scan-totals"></small></div>
         <label>搜尋條碼或品名<input id="filter-lines" type="search"></label>
@@ -138,5 +159,22 @@
     </section>
   </main>
   <div id="toast" role="status" hidden></div>
+  <div id="unknown-overlay" hidden>
+    <section id="unknown-dialog" role="dialog" aria-modal="true" aria-labelledby="unknown-title">
+      <h2 id="unknown-title">主檔查無此商品</h2>
+      <p id="unknown-scan"></p>
+      <div id="unknown-choices" class="stack">
+        <button id="search-master" type="button">用品名搜尋</button>
+        <button id="count-unknown" type="button" class="primary">直接計入</button>
+        <button id="cancel-unknown" type="button">取消（不計入）</button>
+      </div>
+      <div id="unknown-search" class="stack" hidden>
+        <button id="back-to-choices" type="button">← 返回</button>
+        <label>搜尋品名、條碼或貨號<input id="master-query" type="search" autocomplete="off"></label>
+        <div id="master-results" class="stack" aria-live="polite"></div>
+        <button id="cancel-search" type="button">取消</button>
+      </div>
+    </section>
+  </div>
 </body>
 </html>

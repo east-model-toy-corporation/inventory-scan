@@ -24,6 +24,7 @@
   }
   function create(video, onScan, onState) {
     let stream, track, frame, facing = 'environment', generation = 0, torch = false;
+    let paused = false, pauseVersion = 0;
     function stop() {
       generation++;
       if (frame != null) cancelAnimationFrame(frame);
@@ -69,11 +70,15 @@
         let previous = -Infinity;
         async function tick(time) {
           if (token !== generation) return;
-          if (video.readyState >= 2 && time-previous >= 120) {
+          if (!paused && video.readyState >= 2 && time-previous >= 120) {
             previous = time;
             try {
+              const version = pauseVersion;
               const codes = await decode();
-              if (token === generation) for (const code of codes) onScan(code,'camera');
+              for (const code of codes) {
+                if (token !== generation || paused || version !== pauseVersion) break;
+                onScan(code,'camera');
+              }
             } catch (_) {
               if (token === generation) { stop(); onState(false,false,'無法辨識鏡頭畫面，請重新開啟鏡頭'); }
               return;
@@ -91,7 +96,8 @@
         onState(false,false,message);
       }
     }
-    return {start,stop,toggle:() => stream ? stop() : start(),switchCamera:() => {
+    return {start,stop,pause:() => { paused = true; pauseVersion++; },
+      resume:() => { paused = false; },toggle:() => stream ? stop() : start(),switchCamera:() => {
       facing = facing === 'environment' ? 'user' : 'environment';
       return start();
     },toggleTorch:async () => {

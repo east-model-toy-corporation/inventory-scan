@@ -21,6 +21,7 @@
   let summaryDue = false, nextSummaryAt = 0;
   let lookupToken = 0, lastMutation = 0;
   const seen = new Map();
+  let qtyEdit, unknownScan, lastFeedback = null;
   const interval = Math.max(200,Number(new URLSearchParams(location.search).get('syncInterval')) || 3000);
   const localReady = Promise.all([S.load(),S.loadMasters()]).then(async ([rows,records]) => {
     masters = records;
@@ -302,7 +303,11 @@
   }
   function go(next) {
     if ((next === 'scan' && !active) || (next === 'summary' && !summarySession())) { toast('請先開始盤點'); return; }
-    if (view === 'scan' && next !== 'scan') scanner.stop();
+    if (view === 'scan' && next !== 'scan') {
+      finishQty();
+      if (unknownScan) finishUnknown();
+      scanner.stop();
+    }
     view = next;
     identity();
     if (next === 'start') storeChanged();
@@ -416,6 +421,7 @@
     const current = active;
     if (!current || ending || $('begin').disabled ||
         !window.confirm('確定結束『'+sessionName(current)+'』盤點？結束後無法再刷讀，下次選此門市會開新場次')) return;
+    finishQty();
     ending = true;
     $('end-session').disabled = true;
     scanner.stop();
@@ -470,16 +476,19 @@
     } catch (_) { /* 繼續刷讀 */ }
   }
   function feedback(unknown) {
-    if (config.vibrate && navigator.vibrate) navigator.vibrate(60);
+    if (config.vibrate && navigator.vibrate) navigator.vibrate(unknown ? [200,100,200] : 60);
     if (!config.beep || !audio || audio.state !== 'running') return;
     try {
-      const tone = audio.createOscillator(), volume = audio.createGain();
-      tone.frequency.value = unknown ? 310 : 850;
-      volume.gain.value = .12;
-      tone.connect(volume);
-      volume.connect(audio.destination);
-      tone.start();
-      tone.stop(audio.currentTime+.095);
+      const start = audio.currentTime;
+      for (const offset of unknown ? [0,.25] : [0]) {
+        const tone = audio.createOscillator(), volume = audio.createGain();
+        tone.frequency.value = unknown ? 220 : 850;
+        volume.gain.value = .12;
+        tone.connect(volume);
+        volume.connect(audio.destination);
+        tone.start(start+offset);
+        tone.stop(start+offset+(unknown ? .15 : .095));
+      }
     } catch (_) { /* 繼續刷讀 */ }
   }
   const writes = new Map(), unpersisted = new Set();
@@ -498,27 +507,112 @@
     write.then(() => { if (writes.get(line.id) === write) unpersisted.delete(line.id); finished(); },error => { finished(); toast(error.message); });
     return write.then(() => true,() => false);
   }
-  async function handleScan(code,source = 'camera',qty = 1) {
-    await localReady;
-    if (!active || ending || view !== 'scan') return false;
+  async function handleScan(code,source = 'camera',qty = $('qty').valueAsNumber) {
+    if (!active || ending || view !== 'scan' || unknownScan || (qtyEdit && source === 'camera')) return false;
     const raw = C.clean(code);
     if (!raw || raw.length > 64 || !Number.isInteger(qty) || qty < 1 || qty > 999999) return false;
     const product = active.mode === 'master' && C.findProduct(C.masterIndex(itemsFor(active.code)),raw);
     const barcode = product ? product.barcode : raw;
     if (C.deduped(seen,barcode,source,config.dedupe)) {
+      lastFeedback = 'duplicate';
       $('scan-note').textContent = '重複略過';
       return false;
     }
+    if (active.mode === 'master' && !product) {
+      lastFeedback = 'notInMaster';
+      unknownScan = {barcode,qty};
+      refreshPause();
+      feedback(true);
+      $('scan-note').textContent = '';
+      $('unknown-scan').textContent = '條碼 '+barcode+' ／ 數量 '+qty;
+      $('unknown-overlay').hidden = false;
+      showMasterSearch(false);
+      renderScan();
+      return false;
+    }
+    return countScan(barcode,product,qty);
+  }
+  function countScan(barcode,product,qty) {
     const line = C.upsertScan(values(),scope(),barcode,product ? product.name : '',qty,mutationTime());
     if (line.qty > 999999) { toast('單筆數量最多 999,999 件'); return false; }
     lastId = line.id;
     $('scan-note').textContent = '';
-    feedback(active.mode === 'master' && !product);
+    $('qty').value = 1;
+    if (active.mode !== 'master' || product) {
+      lastFeedback = 'ok';
+      feedback(false);
+    }
     return record(line);
+  }
+  function refreshPause() {
+    if (qtyEdit || unknownScan) scanner.pause();
+    else scanner.resume();
+    $('scan-paused').hidden = !qtyEdit;
+    $('camera-preview').hidden = !qtyEdit && $('preview').hidden;
+    $('confirm-qty').hidden = !qtyEdit;
+    $('last-scan').classList.toggle('editing',!!qtyEdit);
+    $('camera-panel').classList.toggle('paused',!!(qtyEdit || unknownScan));
+  }
+  function finishQty() {
+    if (!qtyEdit) return;
+    const line = lines.get(qtyEdit);
+    const text = $('last-qty').value.trim();
+    qtyEdit = null;
+    if (line && /^\d+$/.test(text) && Number(text) <= 999999 && Number(text) !== line.qty) {
+      update(line,Number(text));
+    }
+    renderScan();
+    refreshPause();
+  }
+  function showMasterSearch(show) {
+    $('unknown-choices').hidden = show;
+    $('unknown-search').hidden = !show;
+    if (show) {
+      $('master-query').value = '';
+      renderMasterResults();
+    }
+    $(show ? 'master-query' : 'search-master').focus();
+  }
+  function localCount(matches) {
+    return values().filter(line => !line.deleted && line.session === active.code && own(line) &&
+      matches(line.barcode)).reduce((total,line) => total+line.qty,0);
+  }
+  function renderMasterResults() {
+    const query = $('master-query').value;
+    const results = C.searchMaster(itemsFor(active.code),query);
+    const master = C.masterIndex(itemsFor(active.code));
+    const counts = new Map();
+    for (const line of lines.values()) {
+      if (line.deleted || line.session !== active.code || !own(line)) continue;
+      const product = C.findProduct(master,line.barcode);
+      if (product) counts.set(product.barcode,(counts.get(product.barcode) || 0)+line.qty);
+    }
+    const rows = results.map(product => {
+      const result = button('',() => finishUnknown(true,product),'master-result');
+      result.append(node('strong',product.name || product.barcode),
+        node('small',product.barcode+' ／ 帳面 '+product.bookQty+' ／ 本機已盤 '+
+          (counts.get(product.barcode) || 0)));
+      return result;
+    });
+    if (!rows.length && query.trim()) {
+      rows.push(node('p','查無結果'),button('查無結果，返回直接計入',() => finishUnknown(true),'primary'));
+    }
+    replace($('master-results'),...rows);
+  }
+  function finishUnknown(count = false,product) {
+    if (!unknownScan) return;
+    const {barcode,qty} = unknownScan;
+    unknownScan = null;
+    $('unknown-overlay').hidden = true;
+    $('qty').value = 1;
+    if (count && active && !ending) countScan(product ? product.barcode : barcode,product,qty);
+    renderScan();
+    refreshPause();
+    $('barcode').focus();
   }
   function update(line,qty) {
     const current = lines.get(line.id);
-    if (!active || ending || !current || current.deleted || current.rejected) return;
+    if (!active || ending || !current || current.session !== active.code || current.deleted || current.rejected) return;
     if (!Number.isInteger(qty) || qty < 0 || qty > 999999) { toast('請輸入 0 到 999,999 的整數'); return; }
     if (qty === 0 && !window.confirm('確定刪除此筆刷讀明細？')) return;
     editingId = null;
@@ -585,14 +679,21 @@
     });
     replace($('lines'),...rows);
     const last = lines.get(lastId);
-    $('last-scan').hidden = !last || last.deleted;
+    $('last-scan').hidden = !unknownScan && (!last || last.deleted);
+    $('last-controls').hidden = !!unknownScan;
+    if (unknownScan) {
+      $('last-scan').classList.add('last-unknown');
+      replace($('last-details'),node('h3','主檔查無此商品','unknown'),node('p',unknownScan.barcode));
+      return;
+    }
     if (!last || last.deleted) return;
     const product = compare && C.findProduct(master,last.barcode);
-    const heading = node('h3',product ? product.name || last.barcode : compare ? '主檔查無' : last.barcode,compare && !product ? 'unknown' : '');
+    $('last-scan').classList.toggle('last-unknown',compare && !product);
+    if (!qtyEdit) $('last-qty').value = last.qty;
+    const heading = node('h3',product ? product.name || last.barcode : compare ? '主檔查無此商品' : last.barcode,compare && !product ? 'unknown' : '');
     const detail = node('div',null,'metrics');
     const matches = barcode => barcode === last.barcode || (product && C.findProduct(master,barcode) === product);
-    const localQty = values().filter(line => !line.deleted && line.session === active.code && own(line) &&
-      matches(line.barcode)).reduce((total,line) => total+line.qty,0);
+    const localQty = localCount(matches);
     const counts = [[compare ? '本機已盤' : '累計',localQty]];
     let total = localQty;
     if (remote) {
@@ -606,7 +707,7 @@
         (diff > 0 ? '+' : '')+diff+' '+C.itemStatus(product.bookQty,total),diff > 0 ? 'positive' : diff < 0 ? 'negative' : '']);
     }
     metrics(detail,counts);
-    replace($('last-scan'),heading,...(compare ? [node('p',last.barcode)] : []),detail);
+    replace($('last-details'),heading,...(compare ? [node('p',last.barcode)] : []),detail);
   }
   const summaryStatusClasses = {
     '盤盈':'surplus', '盤虧':'shortage', '相符':'matched', '主檔查無':'unknown', '未盤':'uncounted'
@@ -725,6 +826,7 @@
   const scanner = window.InvScanner.create($('video'),handleScan,(running,torch,error) => {
     $('camera').textContent = running ? '停止' : '開啟鏡頭';
     $('preview').hidden = !running;
+    $('camera-preview').hidden = !running && !qtyEdit;
     $('torch').hidden = !torch;
     $('torch').setAttribute('aria-pressed','false');
     $('camera-note').textContent = error;
@@ -798,13 +900,67 @@
   $('start-form').onsubmit = begin;
   $('scan-form').onsubmit = async event => {
     event.preventDefault();
+    if (unknownScan) return;
     unlockAudio();
-    const code = $('barcode').value, qty = $('qty').valueAsNumber;
+    const code = $('barcode').value;
     $('barcode').value = '';
-    $('qty').value = 1;
     $('barcode').focus();
-    await handleScan(code,'manual',qty);
+    await handleScan(code,'manual');
   };
+  $('last-qty').onfocus = event => {
+    qtyEdit = qtyEdit || lastId;
+    refreshPause();
+    event.target.select();
+  };
+  $('last-qty').onblur = event => {
+    if (event.relatedTarget !== $('confirm-qty')) finishQty();
+  };
+  $('last-qty').onkeydown = event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finishQty();
+      $('barcode').focus();
+    }
+  };
+  $('confirm-qty').onmousedown = event => event.preventDefault();
+  $('confirm-qty').onclick = () => {
+    finishQty();
+    $('barcode').focus();
+  };
+  $('confirm-qty').onblur = event => {
+    if (event.relatedTarget !== $('last-qty')) finishQty();
+  };
+  for (const control of $('last-controls').querySelectorAll('[data-adjust]')) {
+    control.onclick = () => {
+      if (qtyEdit) {
+        finishQty();
+        $('last-qty').blur();
+      }
+      const line = lines.get(lastId);
+      if (line) update(line,line.qty+Number(control.dataset.adjust));
+    };
+  }
+  $('search-master').onclick = () => showMasterSearch(true);
+  $('back-to-choices').onclick = () => showMasterSearch(false);
+  $('count-unknown').onclick = () => finishUnknown(true);
+  $('cancel-unknown').onclick = $('cancel-search').onclick = () => finishUnknown();
+  $('master-query').oninput = renderMasterResults;
+  document.addEventListener('keydown',event => {
+    if (!unknownScan) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      finishUnknown();
+    }
+    if (event.key === 'Tab') {
+      const pane = $($('unknown-search').hidden ? 'unknown-choices' : 'unknown-search');
+      const controls = [...pane.querySelectorAll('button,input')];
+      const edge = event.shiftKey ? controls[0] : controls[controls.length-1];
+      if (document.activeElement === edge || !pane.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? controls[controls.length-1] : controls[0]).focus();
+      }
+    }
+  });
   $('camera').onclick = () => { unlockAudio(); scanner.toggle(); };
   $('flip').onclick = () => { unlockAudio(); scanner.switchCamera(); };
   $('torch').onclick = async () => {
@@ -851,6 +1007,7 @@
   window.addEventListener('offline',showQueue);
   window.InventoryApp = {handleScan,syncNow,getState:() => ({
     active:active && {...active},lines:values().map(line => ({...line})),device,view,
+    lastFeedback,dialogOpen:!!unknownScan,scannerPaused:!!(qtyEdit || unknownScan),
     pending:values().filter(line => line.dirty).length
   })};
   localReady.then(() => {

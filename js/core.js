@@ -139,6 +139,17 @@
     const parts = dateParts(date);
     return '盤點_'+session.replace(/[\\/:*?"<>|]/g,'-').replace(/\s+/g,'_')+'_'+parts.slice(0,3).join('')+'-'+parts.slice(3).join('')+'.'+extension;
   }
-  return {clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
+  function searchMaster(items, query, limit = 30) {
+    const terms = clean(query).toLowerCase().split(/\s+/).filter(Boolean);
+    const results = [];
+    if (!terms.length || limit < 1) return results;
+    for (const item of items) {
+      const text = [item.name,item.barcode,item.sku].join(' ').toLowerCase();
+      if (terms.every(term => text.includes(term))) results.push(item);
+      if (results.length >= limit) break;
+    }
+    return results;
+  }
+  return {searchMaster,clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
     upsertScan,editLine,deduped,batch,acknowledged,itemStatus,summarize,itemRows,exportRows,groupRows,csv,filename};
 });
