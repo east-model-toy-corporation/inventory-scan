@@ -1,3 +1,4 @@
+const {createHash} = require('node:crypto');
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {createGas} = require('./gas-mock');
@@ -15,7 +16,7 @@ test('setup creates and freezes the required headers',() => {
   gas.setup();
   gas.setup();
   const expected = {
-    主檔:'門市 條碼 品名 帳面數量 貨號',
+    主檔:'場次 門市 條碼 品名 帳面數量 貨號',
     場次:'場次代碼 場次名稱 門市 模式 建立者 建立時間 狀態',
     刷讀明細:'時間 場次 門市 盤點人 裝置 條碼 品名 數量 id 更新時間 狀態',
     彙總:'場次 門市 條碼 品名 帳面數量 實盤數量 差異 狀態 盤點人數 最後更新'
@@ -66,7 +67,7 @@ test('deleted lines are excluded from totals and grouped summaries',() => {
 test('master compares all five statuses and writes a sorted all-session summary',() => {
   const gas = createGas();
   session(gas);
-  gas.post({action:'master',store:base.store,replace:true,items:[
+  gas.post({action:'master',session:'S1',store:base.store,replace:true,items:[
     {barcode:'001234',name:'模型',bookQty:1},
     {barcode:'P2',name:'商品二',bookQty:5},
     {barcode:'P3',name:'商品三',bookQty:2},
@@ -86,14 +87,19 @@ test('master compares all five statuses and writes a sorted all-session summary'
 });
 test('master reads numeric cells as strings, preserves zeros and applies store precedence',() => {
   const gas = createGas();
-  gas.setup();
-  const sheet = gas.spreadsheet.getSheetByName('主檔');
+  const sheet = gas.spreadsheet.insertSheet('主檔');
+  sheet.appendRow(['門市','條碼','品名','帳面數量','貨號']);
   sheet.appendRow(['',4904810049586,'共用',4,'']);
   sheet.appendRow([base.store,'0000123','門市商品',3,'']);
   sheet.appendRow(['華山','other','其他門市',1,'']);
   const result = gas.get({action:'master',store:base.store});
   assert.deepEqual(result.items.map(item => item.barcode),['4904810049586','0000123']);
-  gas.post({action:'master',store:base.store,replace:true,items:[{barcode:'4904810049586',name:'門市優先',bookQty:8}]});
+  assert.equal(result.source,'store');
+  assert.equal(result.count,2);
+  gas.setup();
+  assert.deepEqual(rows(gas,'主檔')[0],['場次','門市','條碼','品名','帳面數量','貨號']);
+  assert.deepEqual(rows(gas,'主檔')[2],['',base.store,'0000123','門市商品',3,'']);
+  sheet.appendRow(['',base.store,'4904810049586','門市優先',8,'']);
   assert.equal(gas.get({action:'master',store:base.store}).items[0].name,'門市優先');
   assert.equal(gas.get({action:'master',store:'華山'}).items.length,2);
 });
@@ -129,7 +135,7 @@ test('invalid lines are rejected without discarding valid lines',() => {
 test('UPC aliases, distinct devices with the same name and renamed devices aggregate correctly',() => {
   const gas = createGas();
   session(gas);
-  gas.post({action:'master',store:base.store,replace:true,items:[{barcode:'0123456789012',name:'模型',bookQty:3}]});
+  gas.post({action:'master',session:'S1',store:base.store,replace:true,items:[{barcode:'0123456789012',name:'模型',bookQty:3}]});
   upload(gas,{...base,barcode:'123456789012',device:'D-1｜甲'},
     {...base,id:'next',barcode:'0123456789012',device:'D-1｜乙'},
     {...base,id:'other',barcode:'0123456789012',device:'D-2｜乙'});
@@ -138,4 +144,54 @@ test('UPC aliases, distinct devices with the same name and renamed devices aggre
   assert.equal(result.items[0].mineQty,4);
   assert.equal(result.items[0].countedQty,6);
   assert.equal(result.byDevice.length,2);
+});
+
+test('session masters replace only their own rows and override store fallback in summaries',() => {
+  const gas = createGas();
+  session(gas);
+  gas.post({action:'createSession',code:'S2',store:base.store,mode:'master'});
+  const sheet = gas.spreadsheet.getSheetByName('主檔');
+  sheet.appendRow(['',base.store,base.barcode,'門市商品',12,'']);
+  const load = code => gas.get({action:'master',session:code});
+  const save = (code,items) => gas.post({action:'master',session:code,store:base.store,items,replace:true});
+  assert.equal(load('S2').source,'store');
+  assert.equal(load('missing').source,'none');
+  assert.equal(save('missing',[]).error,'場次不存在');
+  assert.equal(save(undefined,[]).error,'場次不存在');
+  assert.equal(rows(gas,'主檔').length,2);
+  const item = {barcode:base.barcode,name:'場次商品',bookQty:3};
+  assert.equal(save('S1',[item,{...item,barcode:'old'}]).count,2);
+  assert.equal(save('S2',[{...item,bookQty:7}]).count,1);
+  assert.equal(save('S1',[item]).count,1);
+  assert.deepEqual(load('S1'),{ok:true,source:'session',count:1,items:[{...item,sku:''}]});
+  assert.equal(load('S2').items[0].bookQty,7);
+  assert.equal(gas.get({action:'master',store:base.store}).items[0].bookQty,12);
+  upload(gas,base);
+  assert.equal(summary(gas).items[0].diff,-1);
+  assert.equal(save('S1',[]).count,0);
+  assert.equal(summary(gas).items[0].diff,-10);
+});
+
+test('master accepts 30000 items and rejects larger replacements without changing rows',() => {
+  const gas = createGas();
+  session(gas);
+  const items = Array.from({length:30000},(_,index) => ({barcode:String(index),bookQty:1}));
+  const request = {action:'master',session:'S1',replace:true,items};
+  assert.equal(gas.post(request).count,30000);
+  assert.equal(gas.post({...request,items:[...items,items[0]]}).ok,false);
+  assert.equal(gas.get({action:'master',session:'S1'}).count,30000);
+});
+
+test('a valid hash bootstraps the key once and the existing property takes precedence',() => {
+  const key = '測試-key';
+  const keyHash = createHash('sha256').update(key).digest('hex');
+  const gas = createGas({key:null,keyHash});
+  assert.equal(gas.get({action:'ping',key:'wrong'}).error,'unauthorized');
+  assert.equal(gas.props.has('API_KEY'),false);
+  assert.equal(gas.post({action:'createSession',code:'S1',store:base.store,mode:'master',key}).ok,true);
+  assert.equal(gas.props.get('API_KEY'),key);
+  assert.equal(gas.get({action:'ping',key:'wrong'}).error,'unauthorized');
+  gas.props.set('API_KEY','new-key');
+  assert.equal(gas.get({action:'ping',key}).error,'unauthorized');
+  assert.equal(gas.get({action:'ping',key:'new-key'}).ok,true);
 });

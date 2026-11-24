@@ -1,3 +1,4 @@
+const {createHash} = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -33,6 +34,7 @@ class Sheet {
           typeof value === 'string' && value.startsWith("'") ? value.slice(1) : value)));
         return range;
       },
+      setValue: value => range.setValues([[value]]),
       setFontWeight: () => range,
       setBackground: () => range,
       setNumberFormat: () => range,
@@ -48,11 +50,12 @@ class Sheet {
   clear() { return this.clearContents(); }
   clearContents() { this.rows = []; return this; }
   setFrozenRows(count) { this.frozen = count; return this; }
+  insertColumnBefore(column) { this.rows.forEach(row => row.splice(column-1,0,'')); this.maxColumns++; }
   deleteColumn(column) { this.rows.forEach(row => row.splice(column-1,1)); this.maxColumns--; }
   deleteRows(start,count) { this.rows.splice(start-1,count); }
 }
 
-function createGas({key = 'test-key'} = {}) {
+function createGas({key = 'test-key',keyHash} = {}) {
   const sheets = new Map();
   const props = new Map();
   if (key) props.set('API_KEY',key);
@@ -70,7 +73,11 @@ function createGas({key = 'test-key'} = {}) {
     PropertiesService:{getScriptProperties:() => ({
       getProperty:name => props.get(name) || null,setProperty:(name,value) => props.set(name,value)
     })},
-    Utilities:{formatDate:(date,timeRegion) => {
+    Utilities:{
+      DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},
+      computeDigest:(algorithm,value,charset) => Array.from(createHash(algorithm).update(value,charset).digest(),
+        byte => byte > 127 ? byte - 256 : byte),
+      formatDate:(date,timeRegion) => {
       const format = new Intl.DateTimeFormat('en-CA',{timeZone:timeRegion,year:'numeric',month:'2-digit',
         day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
       const parts = Object.fromEntries(format.formatToParts(date).map(part => [part.type,part.value]));
@@ -79,9 +86,10 @@ function createGas({key = 'test-key'} = {}) {
     Session:{getScriptTimeZone:() => 'Asia/Taipei'},
     Logger:{log() {}}
   });
+  if (keyHash !== undefined) context.API_KEY_SHA256 = keyHash;
   source.runInContext(context);
   const decode = output => JSON.parse(output.getContent());
-  return {context,spreadsheet,setup:() => context.setup(),
+  return {context,spreadsheet,props,setup:() => context.setup(),
     get:parameter => decode(context.doGet({parameter:{key,...parameter}})),
     post:data => decode(context.doPost({postData:{type:'text/plain;charset=utf-8',contents:JSON.stringify({key,...data})}}))};
 }

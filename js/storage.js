@@ -13,18 +13,24 @@
   let database;
   function open() {
     if (!database) database = new Promise((resolve,reject) => {
-      const request = indexedDB.open('inventory-scan',1);
-      request.onupgradeneeded = () => request.result.createObjectStore('lines',{keyPath:'id'});
-      request.onsuccess = () => resolve(request.result);
+      const request = indexedDB.open('inventory-scan',2);
+      request.onupgradeneeded = event => {
+        if (event.oldVersion === 0) request.result.createObjectStore('lines',{keyPath:'id'});
+        request.result.createObjectStore('masters',{keyPath:'code'});
+      };
+      request.onsuccess = () => {
+        request.result.onversionchange = () => { request.result.close(); database = null; };
+        resolve(request.result);
+      };
       request.onerror = request.onblocked = () => reject(request.error || new Error('無法開啟本機資料庫'));
     });
     return database;
   }
-  async function transaction(mode, work) {
+  async function transaction(mode, work, collection = 'lines') {
     const db = await open();
     return new Promise((resolve,reject) => {
-      const tx = db.transaction('lines',mode);
-      const request = work(tx.objectStore('lines'));
+      const tx = db.transaction(collection,mode);
+      const request = work(tx.objectStore(collection));
       tx.oncomplete = () => resolve(request && request.result);
       tx.onerror = tx.onabort = () => reject(tx.error || new Error('無法儲存本機資料'));
     });
@@ -56,5 +62,21 @@
     }
     return [...lines.values()];
   }
-  window.InvStorage = {get,set,load,put:line => change(line.id,line),remove:id => change(id,null)};
+  async function loadMasters() {
+    let records = [];
+    try { records = await transaction('readonly',store => store.getAll(),'masters'); }
+    catch (_) { /* 使用本機備援資料 */ }
+    return new Map([...records,...get('sessionMasters',[])].map(record => [record.code,record]));
+  }
+  async function putMaster(record) {
+    const fallback = get('sessionMasters',[]);
+    const others = fallback.filter(item => item.code !== record.code);
+    try {
+      await transaction('readwrite',store => store.put(record),'masters');
+      if (others.length !== fallback.length) set('sessionMasters',others);
+    } catch (_) {
+      if (!set('sessionMasters',[...others,record])) throw new Error('無法儲存場次主檔');
+    }
+  }
+  window.InvStorage = {get,set,load,loadMasters,putMaster,put:line => change(line.id,line),remove:id => change(id,null)};
 })();

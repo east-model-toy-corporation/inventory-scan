@@ -117,8 +117,6 @@ test('Excel, CSV and cloud master preserve barcodes and render comparisons',asyn
   await upload.setInputFiles({name:'master.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     buffer:XLSX.write(book,{type:'buffer',bookType:'xlsx'})});
   await expect(count).toHaveText('已載入 2 筆');
-  await button(page,'上傳此主檔到試算表').click();
-  await expect(page.locator('#toast')).toHaveText('已上傳 2 筆主檔');
   await upload.setInputFiles({name:'replace.csv',mimeType:'text/csv',buffer:Buffer.from('JAN,商品名稱,庫存\n000003,暫存,1')});
   await expect(count).toHaveText('已載入 1 筆');
   // Big5 encoding of JAN,商品名稱,庫存 followed by two rows.
@@ -129,9 +127,11 @@ test('Excel, CSV and cloud master preserve barcodes and render comparisons',asyn
   await expect(count).toHaveText('已載入 2 筆');
   await upload.setInputFiles({name:'bom.csv',mimeType:'text/csv',buffer:Buffer.from('\uFEFFJAN,商品名稱,庫存\n000006,模型,1')});
   await expect(count).toHaveText('已載入 1 筆');
-  await button(page,'從雲端試算表載入').click();
+  await upload.setInputFiles({name:'master.xlsx',mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer:XLSX.write(book,{type:'buffer',bookType:'xlsx'})});
   await expect(count).toHaveText('已載入 2 筆');
   await begin(page);
+  await expect(page.locator('#toast')).toHaveText('主檔已上傳到場次（2 筆）');
   await scan(page,'000001','manual',2);
   await expect(page.locator('#last-scan')).toContainText('模型甲');
   await expect(page.locator('#last-scan')).toContainText('帳面5');
@@ -145,6 +145,59 @@ test('Excel, CSV and cloud master preserve barcodes and render comparisons',asyn
   await expect(itemRow(page,'000002')).toContainText('未盤');
   await expect(itemRow(page,'UNKNOWN')).toContainText('主檔查無');
   await noPreflight(server);
+});
+
+test('a fresh joiner automatically loads the session master and can reload it',async ({page,browser,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  await page.getByLabel('有商品主檔（對照帳面）').check();
+  await page.locator('#master-file').setInputFiles({name:'stock.csv',mimeType:'text/csv',
+    buffer:Buffer.from('JAN,商品名稱,庫存\n000001,模型甲,5\n000002,模型乙,2')});
+  await expect(page.locator('#master-count')).toHaveText('已載入 2 筆');
+  await begin(page);
+  const endpoint = server.apiUrl+'?action=master&session=TEST-S1&key=test-key';
+  await expect.poll(async () => (await (await fetch(endpoint)).json()).source).toBe('session');
+  const context = await browser.newContext();
+  try {
+    const joiner = await context.newPage();
+    await open(joiner,server);
+    await configure(joiner,server);
+    await begin(joiner,{join:true,counter:'小陳'});
+    await scan(joiner,'000001','manual',2);
+    await expect(joiner.locator('#last-scan')).toContainText('模型甲');
+    await expect(joiner.locator('#last-scan')).toContainText('帳面5');
+    await summary(joiner);
+    await expect(itemRow(joiner,'000001')).toContainText('盤虧');
+    await expect(itemRow(joiner,'000002')).toContainText('未盤');
+    await button(joiner,'重新載入場次主檔').click();
+    await expect(joiner.locator('#summary-source')).toContainText('已載入全場資料');
+    await summary(page);
+    await button(page,'重新上傳主檔到此場次').click();
+    await expect(page.locator('#toast')).toHaveText('主檔已上傳到場次（2 筆）');
+    await noPreflight(server);
+  } finally { await context.close(); }
+});
+
+test('pending session master survives a reload and uploads after cloud recovery',async ({page,server}) => {
+  await open(page,server);
+  await configure(page,server);
+  await page.getByLabel('有商品主檔（對照帳面）').check();
+  await page.locator('#master-file').setInputFiles({name:'stock.csv',mimeType:'text/csv',
+    buffer:Buffer.from('JAN,商品名稱,庫存\n000001,模型甲,5')});
+  await expect(page.locator('#master-count')).toHaveText('已載入 1 筆');
+  await fetch(new URL('/__fail?on=1',server.apiUrl));
+  await begin(page);
+  await expect(page.locator('#sync-status')).toContainText('主檔待上傳');
+  await expect(page.locator('#sync-status')).toContainText('將自動重試');
+  await page.reload();
+  await expect(page.locator('#sync-status')).toContainText('主檔待上傳');
+  await scan(page,'000001');
+  await expect(page.locator('#last-scan')).toContainText('帳面5');
+  await fetch(new URL('/__fail?on=0',server.apiUrl));
+  await expect(page.locator('#sync-status')).not.toContainText('主檔待上傳',{timeout:15000});
+  const result = await fetch(server.apiUrl+'?action=master&session=TEST-S1&key=test-key').then(response => response.json());
+  expect(result).toMatchObject({source:'session',count:1});
+  await queue(page,0);
 });
 
 test('downloads contain expected spreadsheet cells and CSV BOM',async ({page,server}) => {

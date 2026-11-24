@@ -63,7 +63,6 @@
             <button id="load-master" type="button">從雲端試算表載入</button>
             <label>匯入 Excel／CSV<input type="file" id="master-file" accept=".xlsx,.xls,.csv"></label>
             <small id="master-count" role="status"></small>
-            <button id="send-master" type="button">上傳此主檔到試算表</button>
           </div>
         </fieldset>
         <button id="begin" class="primary" type="submit">開始盤點</button>
@@ -96,6 +95,10 @@
     </section>
     <section id="summary" hidden>
       <div class="heading"><h2>彙總</h2><button id="refresh">重新整理</button></div>
+      <div id="session-master-actions" hidden>
+        <button id="reload-master" type="button">重新載入場次主檔</button>
+        <button id="send-master" type="button">重新上傳主檔到此場次</button>
+      </div>
       <p id="summary-source" role="status"></p>
       <div id="summary-totals" class="panel metrics"></div>
       <div class="panel stack">

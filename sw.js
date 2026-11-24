@@ -1,4 +1,4 @@
-const cacheName = 'inventory-shell-v1';
+const cacheName = 'inventory-shell-v2';
 const shell = ['./','./index.html','./css/app.css','./manifest.webmanifest','./js/core.js',
   './js/storage.js','./js/api.js','./js/scanner.js','./js/app.js',
   './vendor/zxing-library.min.js','./vendor/xlsx.full.min.js'];

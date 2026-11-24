@@ -11,19 +11,29 @@
     url:'',key:'',deviceName:(ios ? (/iPhone/.test(ua) ? 'iPhone' : 'iPad') : /Android/.test(ua) ? 'Android' : '電腦')+'-'+device.slice(-4),
     dedupe:1500,beep:true,vibrate:true
   },S.get('config',{}));
-  let custom = S.get('stores',[]), sessions = S.get('sessions',{}), masters = S.get('masters',{});
+  let custom = S.get('stores',[]), sessions = S.get('sessions',{});
+  let masters = new Map(), draftMaster;
   let active = S.get('active',null), lines = new Map(), lastId, editingId, remote, view = 'start';
   let busy = false, retryAt = 0, delay = 2000, lastSync = '', syncError = '', toastTimer, audio;
   let summaryDue = false, nextSummaryAt = 0;
   let lookupToken = 0, lastMutation = 0;
   const seen = new Map();
   const interval = Math.max(200,Number(new URLSearchParams(location.search).get('syncInterval')) || 3000);
-  const localReady = S.load().then(rows => {
+  const localReady = Promise.all([S.load(),S.loadMasters()]).then(async ([rows,records]) => {
+    masters = records;
+    const legacy = S.get('masters',{});
+    for (const {code,store,mode} of Object.values(sessions)) {
+      if (mode !== 'master' || masters.has(code) || !Object.prototype.hasOwnProperty.call(legacy,store)) continue;
+      const record = {code,store,items:legacy[store],local:true};
+      masters.set(code,record);
+      try { await S.putMaster(record); }
+      catch (error) { toast(error.message); }
+    }
     lines = new Map(rows.map(line => [line.id,line]));
     for (const line of rows) lastMutation = Math.max(lastMutation,Date.parse(line.updatedAt) || 0);
   });
   const values = () => [...lines.values()];
-  const itemsFor = store => Object.prototype.hasOwnProperty.call(masters,store) ? masters[store] : [];
+  const itemsFor = code => masters.has(code) ? masters.get(code).items : [];
   const clock = value => new Date(value).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
   const deviceLabel = id => {
     if (id === device) return config.deviceName;
@@ -59,7 +69,8 @@
     const dirty = values().filter(line => line.dirty).length;
     $('queue').textContent = config.url ? '待上傳 '+dirty+' 筆' : '未設定雲端，僅存本機';
     $('sync-status').textContent = config.url ? [
-      !navigator.onLine ? '離線中' : '', lastSync ? '上次同步 '+clock(lastSync) : '', syncError
+      !navigator.onLine ? '離線中' : '', lastSync ? '上次同步 '+clock(lastSync) : '',
+      [...masters.values()].some(master => master.pending) ? '主檔待上傳' : '', syncError
     ].filter(Boolean).join(' · ') : '';
   }
   function rememberSession(session,pending) {
@@ -81,7 +92,8 @@
     const connection = {...config};
     const sameConnection = () => connection.url === config.url && connection.key === config.key;
     const pending = Object.values(sessions).filter(session => session.pending);
-    if (!pending.length && !C.batch(values()).length) {
+    const pendingMasters = [...masters.values()].filter(master => master.pending);
+    if (!pending.length && !pendingMasters.length && !C.batch(values()).length) {
       refreshAfterSync();
       return;
     }
@@ -94,6 +106,17 @@
           throw new Error('場次代碼已被其他門市或模式使用，請確認場次設定');
         }
         if (sessions[session.code] === session) rememberSession(result.session,false);
+      }
+      for (const master of pendingMasters) {
+        if (masters.get(master.code) !== master) continue;
+        const result = await api(connection,'master',{
+          session:master.code,store:master.store,items:master.items,replace:true
+        },true);
+        if (!sameConnection()) return;
+        if (masters.get(master.code) === master) {
+          await useMaster({...master,pending:false,local:false});
+          toast('主檔已上傳到場次（'+result.count+' 筆）');
+        }
       }
       const batch = C.batch(values());
       if (batch.length) {
@@ -142,16 +165,39 @@
     showMaster();
   }
   function showMaster() {
+    const join = chosen('session-type') === 'join';
+    const code = C.clean($('code').value).toUpperCase();
+    const items = draftMaster && draftMaster.store === $('store').value ? draftMaster.items : itemsFor(code);
     $('master-controls').hidden = chosen('mode') !== 'master';
-    const items = itemsFor($('store').value);
     $('master-count').textContent = '已載入 '+items.length+' 筆';
-    $('send-master').disabled = !items.length || !config.url;
-    $('load-master').disabled = !config.url;
+    $('load-master').disabled = !config.url || (join && !code);
+    const activeMaster = active && active.mode === 'master';
+    $('session-master-actions').hidden = !activeMaster;
+    $('send-master').disabled = !config.url || !activeMaster || !itemsFor(active.code).length;
+    $('reload-master').disabled = !config.url || !activeMaster;
   }
-  function useMaster(store,items) {
-    masters = {...masters,[store]:items};
-    save('masters',masters);
+  async function useMaster(record) {
+    await S.putMaster(record);
+    masters.set(record.code,record);
     showMaster();
+    showQueue();
+  }
+  async function fetchMaster(session) {
+    const {code,store} = session;
+    const previous = masters.get(code);
+    const connection = {...config};
+    const result = await api(connection,'master',{session:code,store});
+    if (connection.url !== config.url || connection.key !== config.key ||
+        masters.get(code) !== previous || (previous && previous.pending)) return;
+    if (result.source === 'none' && previous && previous.local) return;
+    await useMaster({code,store,items:result.items});
+    if (active && active.code === code) {
+      remote = null;
+      nextSummaryAt = 0;
+      summaryDue = true;
+      if (view === 'scan') renderScan();
+      if (view === 'summary') renderSummary();
+    }
   }
   function setSessionType() {
     lookupToken++;
@@ -160,6 +206,7 @@
     $('name-field').hidden = join;
     $('session-info').textContent = '';
     $('code').value = join ? '' : C.sessionCode($('store').value);
+    showMaster();
   }
   async function lookup(code) {
     const token = ++lookupToken;
@@ -210,7 +257,7 @@
       renderScan();
       if (window.matchMedia('(pointer:fine)').matches) $('barcode').focus();
     }
-    if (next === 'summary') renderSummary();
+    if (next === 'summary') { showMaster(); renderSummary(); }
     if (next === 'settings') renderSettings();
     window.scrollTo(0,0);
   }
@@ -227,9 +274,16 @@
       if (!session) session = {code,name:join ? '' : C.clean($('session-name').value),store:$('store').value,
         mode:chosen('mode'),createdBy:counter,createdAt:new Date().toISOString()};
       rememberSession(session,!join || !!session.pending || !session.status);
-      if (join && config.url && session.mode === 'master' && !itemsFor(session.store).length) {
-        try { useMaster(session.store,(await api(config,'master',{store:session.store})).items); }
-        catch (error) { toast(error.message); }
+      if (session.mode === 'master') {
+        if (join && config.url) {
+          try { await fetchMaster(session); }
+          catch (error) { toast(error.message); }
+        }
+        if (draftMaster && draftMaster.store === session.store && (!join || !itemsFor(code).length)) {
+          await useMaster({code,store:session.store,items:draftMaster.items,local:draftMaster.imported,
+            pending:!join && !!config.url && draftMaster.imported});
+          draftMaster = null;
+        }
       }
       active = {...session,counter};
       lastId = editingId = remote = null;
@@ -240,7 +294,8 @@
       identity();
       go('scan');
       syncNow(false);
-    } finally { $('begin').disabled = false; }
+    } catch (error) { toast(error.message); }
+    finally { $('begin').disabled = false; }
   }
   function unlockAudio() {
     if (!config.beep) return;
@@ -285,7 +340,7 @@
     if (!active || view !== 'scan') return false;
     const raw = C.clean(code);
     if (!raw || raw.length > 64 || !Number.isInteger(qty) || qty < 1 || qty > 999999) return false;
-    const product = active.mode === 'master' && C.findProduct(C.masterIndex(itemsFor(active.store)),raw);
+    const product = active.mode === 'master' && C.findProduct(C.masterIndex(itemsFor(active.code)),raw);
     const barcode = product ? product.barcode : raw;
     if (C.deduped(seen,barcode,source,config.dedupe)) {
       $('scan-note').textContent = '重複略過';
@@ -315,8 +370,8 @@
       const server = merged.get(line.id);
       if (!server || line.updatedAt > server.updatedAt) merged.set(line.id,line);
     }
-    const master = C.masterIndex(itemsFor(active.store));
-    if (remote && active.mode === 'master') for (const item of remote.items) {
+    const master = C.masterIndex(itemsFor(active.code));
+    if (remote && active.mode === 'master' && !masters.has(active.code)) for (const item of remote.items) {
       if (item.bookQty !== '') master.set(item.barcode,item);
     }
     return C.summarize(active,[...merged.values()],master,device);
@@ -333,7 +388,7 @@
     const visible = values().filter(line => C.sameScope(line,scope()) && !line.deleted)
       .sort((a,b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
     $('scan-totals').textContent = '品項數 '+visible.length+' ／ 總件數 '+visible.reduce((n,line) => n+line.qty,0);
-    const master = C.masterIndex(itemsFor(active.store));
+    const master = C.masterIndex(itemsFor(active.code));
     const compare = active.mode === 'master';
     const filter = C.clean($('filter-lines').value).toLowerCase();
     const rows = visible.filter(line => (line.name+' '+line.barcode).toLowerCase().includes(filter)).map(line => {
@@ -523,7 +578,7 @@
   };
   for (const radio of document.querySelectorAll('input[name="session-type"]')) radio.onchange = setSessionType;
   for (const radio of document.querySelectorAll('input[name="mode"]')) radio.onchange = showMaster;
-  $('code').oninput = () => { lookupToken++; $('session-info').textContent = ''; };
+  $('code').oninput = () => { lookupToken++; $('session-info').textContent = ''; showMaster(); };
   $('code').onchange = () => {
     if (chosen('session-type') === 'join' && C.clean($('code').value)) lookup(C.clean($('code').value).toUpperCase());
   };
@@ -535,7 +590,15 @@
   $('load-master').onclick = async () => {
     const store = $('store').value;
     if (store === '+') return toast('請先選擇門市');
-    try { useMaster(store,(await api(config,'master',{store})).items); }
+    try {
+      if (chosen('session-type') === 'join') {
+        const code = C.clean($('code').value).toUpperCase();
+        await fetchMaster({code,store});
+      } else {
+        draftMaster = {store,items:(await api(config,'master',{store})).items,imported:false};
+        showMaster();
+      }
+    }
     catch (error) { toast(error.message); }
   };
   $('master-file').onchange = async () => {
@@ -557,15 +620,23 @@
         book = XLSX.read(data,{type:'array',raw:true});
       }
       const rows = XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]],{header:1,raw:true,defval:''});
-      useMaster(store,C.parseMaster(rows));
+      draftMaster = {store,items:C.parseMaster(rows),imported:true};
+      showMaster();
     } catch (error) { toast(error.message || '無法讀取主檔'); }
     finally { $('master-file').value = ''; }
   };
   $('send-master').onclick = async () => {
-    const store = $('store').value;
+    const master = masters.get(active.code);
     try {
-      const result = await api(config,'master',{store,items:itemsFor(store),replace:true},true);
-      toast('已上傳 '+result.count+' 筆主檔');
+      if (!master.pending) await useMaster({...master,pending:true});
+      syncNow();
+    } catch (error) { toast(error.message); }
+  };
+  $('reload-master').onclick = async () => {
+    const current = active;
+    try {
+      await fetchMaster(current);
+      if (active === current) refresh();
     } catch (error) { toast(error.message); }
   };
   $('start-form').onsubmit = begin;
@@ -598,7 +669,7 @@
     catch (error) { $('ping-result').textContent = error.message; }
     finally { $('ping').disabled = false; }
   };
-  $('backup').onclick = () => download(JSON.stringify({device,deviceName:config.deviceName,lines:values(),sessions,masters},null,2),
+  $('backup').onclick = () => download(JSON.stringify({device,deviceName:config.deviceName,lines:values(),sessions,masters:Object.fromEntries([...masters].map(([code,master]) => [code,master.items]))},null,2),
     'application/json',C.filename(active ? active.code : '本機備份','json'));
   $('clear-lines').onclick = async () => {
     if (!window.confirm('確定清除本機已上傳資料？')) return;

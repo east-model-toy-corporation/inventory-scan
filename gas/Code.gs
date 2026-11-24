@@ -1,5 +1,5 @@
 const HEADERS = {
-  主檔: ['門市','條碼','品名','帳面數量','貨號'],
+  主檔: ['場次','門市','條碼','品名','帳面數量','貨號'],
   場次: ['場次代碼','場次名稱','門市','模式','建立者','建立時間','狀態'],
   刷讀明細: ['時間','場次','門市','盤點人','裝置','條碼','品名','數量','id','更新時間','狀態'],
   彙總: ['場次','門市','條碼','品名','帳面數量','實盤數量','差異','狀態','盤點人數','最後更新']
@@ -29,6 +29,10 @@ function sheets() {
     if (!sheet.getLastRow()) {
       ensureSize(sheet, 1, headers.length);
       sheet.getRange(1,1,1,headers.length).setValues([headers]).setFontWeight('bold').setBackground('#e5f1ee');
+      sheet.setFrozenRows(1);
+    } else if (name === '主檔' && sheet.getRange(1,1).getValues()[0][0] === '門市') {
+      sheet.insertColumnBefore(1);
+      sheet.getRange(1,1).setValue('場次').setFontWeight('bold').setBackground('#e5f1ee');
       sheet.setFrozenRows(1);
     } else if (name === '刷讀明細' && sheet.getLastColumn() >= headers.length + 1) {
       const previous = sheet.getRange(1,1,1,headers.length + 1).getValues()[0];
@@ -67,18 +71,22 @@ const read = sheet => sheet.getDataRange().getValues().slice(1).filter(row => ro
 const deviceId = value => clean(value).split('｜',1)[0];
 const barcodeText = value => clean(value).replace(/^(\d+)\.0+$/, '$1');
 function indexMaster(rows) {
-  const stores = new Map();
-  for (const [store, code, name, qty, sku] of rows) {
+  const sessions = new Map(), stores = new Map();
+  for (const [session, store, code, name, qty, sku] of rows) {
     const barcode = barcodeText(code);
     if (!barcode) continue;
-    const storeKey = clean(store);
-    if (!stores.has(storeKey)) stores.set(storeKey, new Map());
-    stores.get(storeKey).set(barcode, {barcode, name: clean(name), bookQty: Number(qty) || 0, sku: clean(sku)});
+    const scope = clean(session);
+    const index = scope ? sessions : stores;
+    const key = scope || clean(store);
+    if (!index.has(key)) index.set(key,new Map());
+    index.get(key).set(barcode,{barcode,name:clean(name),bookQty:Number(qty) || 0,sku:clean(sku)});
   }
-  return stores;
+  return {sessions,stores};
 }
-function masterFor(stores, store) {
-  return new Map([...(stores.get('') || []), ...(stores.get(store) || [])]);
+function masterFor({sessions,stores}, code, store) {
+  if (sessions.has(code)) return {master:sessions.get(code),source:'session'};
+  const master = new Map([...(stores.get('') || []), ...(stores.get(store) || [])]);
+  return {master,source:master.size ? 'store' : 'none'};
 }
 function asSession([code,name,store,mode,createdBy,createdAt,status]) {
   return {code,name,store,mode,createdBy,createdAt:createdAt ? readTaipeiTime(createdAt) : '',status};
@@ -158,7 +166,7 @@ function rebuild(s, lines, requested, device) {
   for (const code of [...groups.keys()].sort()) {
     const group = groups.get(code);
     const session = sessions.get(code) || {code,store:group[0].store,mode:'none'};
-    const summary = calculateSummary(session,group,masterFor(masters,session.store),device);
+    const summary = calculateSummary(session,group,masterFor(masters,code,session.store).master,device);
     if (code === requested) result = summary;
     for (const item of summary.items) rows.push([code,session.store,item.barcode,item.name,item.bookQty,
       item.countedQty,item.diff,item.status,item.counterCount,item.updatedAt ? taipeiTime(item.updatedAt) : '']);
@@ -219,7 +227,12 @@ function route(s, body, post) {
   if (!post) {
     switch (body.action) {
       case 'ping': return {version:'1.0',time:stamp(Date.now())};
-      case 'master': return {items:[...masterFor(indexMaster(read(s.主檔)),clean(body.store)).values()]};
+      case 'master': {
+        const code = clean(body.session);
+        const session = code && read(s.場次).find(row => clean(row[0]) === code);
+        const {master,source} = masterFor(indexMaster(read(s.主檔)),code,clean(session ? session[2] : body.store));
+        return {items:[...master.values()],source,count:master.size};
+      }
       case 'session': {
         const row = read(s.場次).find(row => row[0] === clean(body.code));
         return {session:row ? asSession(row) : null};
@@ -229,14 +242,17 @@ function route(s, body, post) {
   } else switch (body.action) {
     case 'upload': return upload(s,body);
     case 'master': {
-      const store = clean(body.store);
+      const code = clean(body.session);
+      const session = code && read(s.場次).find(row => clean(row[0]) === code);
+      if (!session) throw new Error('場次不存在');
       if (!Array.isArray(body.items) || body.replace !== true) throw new Error('主檔格式錯誤');
+      if (body.items.length > 30000) throw new Error('每次最多上傳 30000 筆主檔');
       const rows = body.items.map(item => {
-        const code = barcodeText(item.barcode);
-        if (!code || code.length > 64 || !Number.isFinite(Number(item.bookQty))) throw new Error('主檔欄位錯誤');
-        return [store,code,clean(item.name),Number(item.bookQty),clean(item.sku)];
+        const barcode = item && barcodeText(item.barcode);
+        if (!barcode || barcode.length > 64 || !Number.isFinite(Number(item.bookQty))) throw new Error('主檔欄位錯誤');
+        return [code,session[2],barcode,clean(item.name),Number(item.bookQty),clean(item.sku)];
       });
-      replaceRows(s.主檔,[...read(s.主檔).filter(row => clean(row[0]) !== store),...rows],[2,5]);
+      replaceRows(s.主檔,[...read(s.主檔).filter(row => clean(row[0]) !== code),...rows],[1,3,6]);
       return {count:rows.length};
     }
     case 'createSession': {
@@ -251,13 +267,29 @@ function route(s, body, post) {
   }
   throw new Error('未知的操作');
 }
+function sha256hex(key) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,key,Utilities.Charset.UTF_8)
+    .map(byte => (byte & 255).toString(16).padStart(2,'0')).join('');
+}
+function authorize(key) {
+  const props = PropertiesService.getScriptProperties();
+  const stored = props.getProperty('API_KEY');
+  if (stored && key === stored) return;
+  if (!stored && typeof API_KEY_SHA256 !== 'undefined' && typeof key === 'string' && key &&
+      sha256hex(key) === API_KEY_SHA256) {
+    props.setProperty('API_KEY',key);
+    return;
+  }
+  throw new Error('unauthorized');
+}
 function respond(e, post) {
   let result;
   try {
     const body = post ? JSON.parse(e.postData.contents) : e.parameter || {};
-    const key = PropertiesService.getScriptProperties().getProperty('API_KEY');
-    if (!key || body.key !== key) throw new Error('unauthorized');
-    result = locked(() => ({ok:true,...route(sheets(),body,post)}));
+    result = locked(() => {
+      authorize(body.key);
+      return {ok:true,...route(sheets(),body,post)};
+    });
   } catch (error) { result = {ok:false,error:error.message}; }
   return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
 }
