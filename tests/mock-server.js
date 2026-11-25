@@ -12,14 +12,22 @@ function listen(server) {
     server.listen(0,'127.0.0.1',() => resolve('http://127.0.0.1:'+server.address().port));
   });
 }
-async function start() {
+async function start({useMockDefault = false} = {}) {
+  let apiUrl;
   let gas = createGas();
   let stats = {options:0,posts:0}, fail = null, now;
   class TestDate extends Date { static now() { return now ?? Date.now(); } }
   gas.context.Date = TestDate;
   const app = http.createServer((req,res) => {
     const url = new URL(req.url,'http://localhost');
-    const item = url.pathname === '/' ? '/index.html' : url.pathname;
+    const pathname = url.pathname.replace(/^\/inventory-scan\//,'/');
+    const item = pathname === '/' ? '/index.html' : pathname;
+    if (item === '/js/config.js') {
+      const defaults = {apiUrl:useMockDefault ? apiUrl : ''};
+      res.writeHead(200,{'Content-Type':mime['.js'],'Cache-Control':'no-cache'})
+        .end('window.INVENTORY_DEFAULTS = '+JSON.stringify(defaults)+';');
+      return;
+    }
     if (!/^\/(?:index\.html|sw\.js|manifest\.webmanifest|(?:css|js|vendor)\/[\w.-]+)$/.test(item)) {
       res.writeHead(404).end(); return;
     }
@@ -75,7 +83,8 @@ async function start() {
   })));
   try {
     const [appUrl,apiOrigin] = await Promise.all([listen(app),listen(api)]);
-    return {appUrl,apiUrl:apiOrigin+apiPath,close};
+    apiUrl = apiOrigin+apiPath;
+    return {appUrl,apiUrl,close};
   } catch (error) { await close(); throw error; }
 }
 if (require.main === module) start().then(({appUrl,apiUrl}) => {

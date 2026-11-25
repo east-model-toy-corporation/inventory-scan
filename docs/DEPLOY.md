@@ -6,7 +6,7 @@
 4. 在編輯器選擇並執行 `setup()`，依提示授權。回到試算表確認已建立「主檔」、「場次」、「刷讀明細」和「彙總」。手動貼上主檔前，將條碼欄設為「純文字」，以保留前導零。門市欄留空表示所有門市適用。
 5. 點選「部署」→「新增部署作業」，類型選「網頁應用程式」。執行身分選「我」，存取權選「所有人」。部署後複製以 `/exec` 結尾的網址。
 6. 在 GitHub 儲存庫開啟「Settings」→「Pages」，選擇「Deploy from a branch」，選擇放置 `index.html` 的分支與目錄。前端以相對路徑載入資源，可放在 GitHub Pages 的儲存庫子路徑。
-7. 開啟 GitHub Pages 網址，在「設定」貼上網址及金鑰，按「測試連線」。相機需要 HTTPS，iPhone 請使用 Safari。
+7. 開啟 GitHub Pages 網址，在「設定」填入金鑰後按「測試連線」。GitHub Pages 版使用 `js/config.js` 中的預設 API 網址。若使用自己的部署，請填入該部署的 `/exec` 網址。清空欄位會恢復使用預設網址。相機需要 HTTPS，iPhone 請使用 Safari。
 
 更新 Apps Script 時，選擇「部署」→「管理部署作業」→「編輯」→「新版本」，然後部署，以沿用原有的 `/exec` 網址。
 
@@ -19,6 +19,15 @@
 舊版「主檔」分頁會自動在最左側加入「場次」欄。場次欄留空的資料仍可在場次沒有專屬主檔時依門市使用。
 
 ## 設定 API 金鑰
+
+主管可將以下格式的設定連結透過 LINE 私訊等私人管道傳給同仁。請勿將金鑰或含金鑰的設定連結提交到 Git。
+
+- 使用目前的 API 網址：`https://<帳號>.github.io/inventory-scan/#key=<API金鑰>`
+- 同時指定 API 網址：`https://<帳號>.github.io/inventory-scan/#key=<API金鑰>&url=<API網址>`
+
+請先對金鑰與 API 網址分別做 URL 編碼。同仁開啟連結後，應用程式會在此瀏覽器儲存設定、移除網址中的片段，並顯示「已設定 API 金鑰」。瀏覽器載入頁面時，網址片段只留在瀏覽器端。
+
+Apps Script 端可擇一設定金鑰。
 
 - 手動設定時，在 Apps Script「專案設定」的「指令碼屬性」新增 `API_KEY` 並填入金鑰。
 - 使用雜湊初始化時，將金鑰存入本機的 `secrets/api_key.txt`，依序執行 `node scripts/prepare-deploy.js` 和 `node scripts/make-config.js`。部署目錄 `deploy/` 包含 `Code.gs`、`appsscript.json` 和只含 SHA-256 雜湊的 `Config.gs`，本機的 `.clasp.json` 也放在此處。首次以正確金鑰呼叫 API 時，程式會寫入 `API_KEY` 指令碼屬性。已有該屬性時，以屬性中的金鑰為準。

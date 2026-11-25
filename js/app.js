@@ -11,6 +11,9 @@
     url:'',key:'',deviceName:(ios ? (/iPhone/.test(ua) ? 'iPhone' : 'iPad') : /Android/.test(ua) ? 'Android' : '電腦')+'-'+device.slice(-4),
     dedupe:1500,beep:true,vibrate:true
   },S.get('config',{}));
+  const defaultUrl = C.clean((window.INVENTORY_DEFAULTS || {}).apiUrl);
+  let savedUrl = C.clean(config.url);
+  config.url = savedUrl || defaultUrl;
   let recentZones = S.get('zones',[]);
   let custom = S.get('stores',[]), sessions = S.get('sessions',{});
   let masters = new Map(), draftMaster, openPreview = null, lookingUp = false, ending = false, preferredMode = 'none';
@@ -69,6 +72,31 @@
   }
   function save(key,value) {
     if (!S.set(key,value)) toast('無法儲存本機設定');
+  }
+  function applySetupLink() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (!params.has('key') && !params.has('url')) return;
+    history.replaceState(history.state,'',location.pathname+location.search);
+    if (params.has('url')) {
+      const url = C.clean(params.get('url'));
+      if (url) {
+        try {
+          const endpoint = new URL(url);
+          if (!['https:','http:'].includes(endpoint.protocol)) throw new Error();
+        } catch (_) {
+          toast('請輸入有效的雲端網址');
+          return;
+        }
+      }
+      // A link that changes endpoints must supply its own key.
+      if ((url || defaultUrl) !== config.url) config.key = '';
+      savedUrl = url;
+      config.url = savedUrl || defaultUrl;
+    }
+    if (params.has('key')) config.key = C.clean(params.get('key'));
+    if (S.set('config',{...config,url:savedUrl})) {
+      toast(params.has('key') ? '已設定 API 金鑰' : '已設定雲端網址');
+    } else toast('無法儲存本機設定');
   }
   const uploadable = line => {
     const session = sessions[line.session];
@@ -837,7 +865,9 @@
     }
   }
   function renderSettings() {
-    for (const [id,key] of [['url','url'],['key','key'],['device-name','deviceName'],['dedupe','dedupe']]) $(id).value = config[key];
+    $('url').value = savedUrl;
+    $('url').placeholder = defaultUrl || 'https://…/exec';
+    for (const [id,key] of [['key','key'],['device-name','deviceName'],['dedupe','dedupe']]) $(id).value = config[key];
     for (const key of ['beep','vibrate']) $(key).checked = config[key];
     replace($('custom-stores'),...(custom.length ? custom.map(store => {
       const row = node('li',store);
@@ -852,8 +882,9 @@
     }) : [node('li','尚無自訂門市')]));
   }
   function saveConfig() {
-    const url = C.clean($('url').value), key = C.clean($('key').value);
-    if (url && (!/^https?:\/\//i.test(url) || !$('url').validity.valid)) { $('ping-result').textContent = '請輸入有效的雲端網址'; return false; }
+    const enteredUrl = C.clean($('url').value), key = C.clean($('key').value);
+    if (enteredUrl && (!/^https?:\/\//i.test(enteredUrl) || !$('url').validity.valid)) { $('ping-result').textContent = '請輸入有效的雲端網址'; return false; }
+    const url = enteredUrl || defaultUrl;
     if (config.url !== url || config.key !== key) {
       lastSync = syncError = '';
       retryAt = 0; delay = 2000;
@@ -863,7 +894,9 @@
     }
     Object.assign(config,{url,key,deviceName:C.clean($('device-name').value) || config.deviceName,
       dedupe:Math.max(0,Math.floor(Number($('dedupe').value) || 0)),beep:$('beep').checked,vibrate:$('vibrate').checked});
-    save('config',config);
+    savedUrl = enteredUrl;
+    save('config',{...config,url:savedUrl});
+    $('missing-api-key').hidden = !config.url || !!config.key;
     showQueue();
     if (view === 'start') storeChanged();
     else showMaster();
@@ -901,6 +934,7 @@
     $('torch').setAttribute('aria-pressed','false');
     $('camera-note').textContent = error;
   });
+  $('setup-settings').onclick = () => go('settings');
   for (const tab of document.querySelectorAll('[data-view]')) tab.onclick = () => go(tab.dataset.view);
   $('end-session').onclick = endActiveSession;
   $('switch').onclick = () => go('start');
@@ -1112,6 +1146,8 @@
     lastFeedback,dialogOpen:!!unknownScan,scannerPaused:!!(qtyEdit || unknownScan || zoneOpen),
     pending:values().filter(line => line.dirty).length
   })};
+  applySetupLink();
+  $('missing-api-key').hidden = !config.url || !!config.key;
   localReady.then(() => {
     $('ios-note').hidden = !ios && !/Line\//i.test(ua);
     storeOptions(summarySession() && summarySession().store);

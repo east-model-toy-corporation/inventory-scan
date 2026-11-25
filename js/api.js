@@ -2,6 +2,7 @@
   const messages = {unauthorized:'API 金鑰錯誤或尚未設定'};
   async function request(config, action, params = {}, post = false) {
     if (!config.url) throw new Error('請先設定雲端網址');
+    if (!config.key) throw new Error(messages.unauthorized);
     const url = new URL(config.url);
     const data = {...params,action,key:config.key};
     const controller = new AbortController();

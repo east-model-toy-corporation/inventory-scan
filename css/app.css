@@ -36,6 +36,7 @@ p { margin-bottom:12px }
 small { color:var(--muted); font-size:.83rem }
 small:empty { display:none }
 .panel { min-width:0; margin:0 0 12px; padding:14px; background:#fff; border:1px solid var(--border); border-radius:14px }
+#missing-api-key { background:#fff4db; border-color:#a87525 }
 .stack { display:grid; gap:10px }
 .stack > .panel { margin:0 }
 .fields { display:grid; gap:10px }

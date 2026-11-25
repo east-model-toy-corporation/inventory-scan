@@ -1,8 +1,9 @@
 const {test:base,expect} = require('@playwright/test');
 const {start} = require('./mock-server');
 const test = base.extend({
-  server:async ({},use) => {
-    const server = await start();
+  useMockDefault:[false,{option:true}],
+  server:async ({useMockDefault},use) => {
+    const server = await start({useMockDefault});
     try { await use(server); }
     finally { await server.close(); }
   }

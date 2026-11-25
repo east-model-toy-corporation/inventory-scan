@@ -1,6 +1,6 @@
-const cacheName = 'inventory-shell-v6';
+const cacheName = 'inventory-shell-v7';
 const shell = ['./','./index.html','./css/app.css','./manifest.webmanifest','./js/core.js',
-  './js/storage.js','./js/api.js','./js/scanner.js','./js/app.js',
+  './js/storage.js','./js/api.js','./js/scanner.js','./js/config.js','./js/app.js',
   './vendor/zxing-library.min.js','./vendor/xlsx.full.min.js'];
 const paths = new Set(shell.map(path => new URL(path,self.registration.scope).pathname));
 self.addEventListener('install',event => {
