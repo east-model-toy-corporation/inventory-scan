@@ -2,6 +2,28 @@ const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const C = require('../js/core');
 
+const guide = {left:40,top:30,width:240,height:120};
+
+test('guide maps to a landscape stream in a landscape preview',() => {
+  assert.deepEqual(C.guideToVideoRect({videoW:1280,videoH:720,boxW:320,boxH:180,guide}),
+    {x:160,y:120,width:960,height:480});
+});
+
+test('guide maps into the visible middle of a portrait stream in a landscape preview',() => {
+  assert.deepEqual(C.guideToVideoRect({videoW:720,videoH:1280,boxW:320,boxH:180,guide}),
+    {x:90,y:505,width:540,height:270});
+});
+
+test('guide maps into the visible middle of a landscape stream in a portrait preview',() => {
+  assert.deepEqual(C.guideToVideoRect({videoW:1280,videoH:720,boxW:180,boxH:360,
+    guide:{left:15,top:90,width:150,height:180}}),{x:490,y:180,width:300,height:360});
+});
+
+test('guide extending outside the source is clamped on every side',() => {
+  assert.deepEqual(C.guideToVideoRect({videoW:1280,videoH:720,boxW:320,boxH:180,
+    guide:{left:-10,top:-10,width:340,height:200}}),{x:0,y:0,width:1280,height:720});
+});
+
 test('parseMaster handles BOM, aliases and barcode representations; the last duplicate wins',() => {
   const items = C.parseMaster([
     ['\uFEFF  JAN','商品名稱','庫存','sku'],

@@ -1,17 +1,12 @@
 (function () {
   const formats = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39'];
-  function decoder(video) {
+  function decoder() {
     const z = window.ZXing;
     const reader = new z.MultiFormatReader();
     const hints = new Map([[z.DecodeHintType.POSSIBLE_FORMATS,formats.map(format => z.BarcodeFormat[format.toUpperCase()])],
       [z.DecodeHintType.TRY_HARDER,true]]);
     reader.setHints(hints);
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d',{willReadFrequently:true});
-    return () => {
-      const width = Math.floor(video.videoWidth*.85), height = Math.floor(video.videoHeight*.50);
-      canvas.width = width; canvas.height = height;
-      context.drawImage(video,(video.videoWidth-width)/2,(video.videoHeight-height)/2,width,height,0,0,width,height);
+    return canvas => {
       try {
         const source = new z.HTMLCanvasElementLuminanceSource(canvas);
         const bitmap = new z.BinaryBitmap(new z.HybridBinarizer(source));
@@ -23,6 +18,10 @@
     };
   }
   function create(video, onScan, onState) {
+    const preview = video.parentElement;
+    const guide = preview.querySelector('.guide');
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d',{willReadFrequently:true});
     let stream, track, frame, facing = 'environment', generation = 0, torch = false;
     let paused = false, pauseVersion = 0;
     function stop() {
@@ -40,8 +39,15 @@
       try {
         if (!window.isSecureContext) throw new Error('需 HTTPS 才能開鏡頭');
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('此瀏覽器無法使用相機');
-        const media = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing},
-          width:{ideal:1280},height:{ideal:720}},audio:false});
+        const facingMode = {ideal:facing};
+        let media;
+        try {
+          media = await navigator.mediaDevices.getUserMedia({video:{facingMode,
+            width:{ideal:1280},height:{ideal:720},aspectRatio:{ideal:16/9}},audio:false});
+        } catch (error) {
+          if (error.name !== 'OverconstrainedError' || token !== generation) throw error;
+          media = await navigator.mediaDevices.getUserMedia({video:{facingMode}});
+        }
         if (token !== generation) { media.getTracks().forEach(item => item.stop()); return; }
         stream = media;
         track = stream.getVideoTracks()[0];
@@ -58,15 +64,31 @@
             const supported = await window.BarcodeDetector.getSupportedFormats();
             if (formats.every(format => supported.includes(format))) {
               const detector = new window.BarcodeDetector({formats});
-              decode = async () => {
-                try { return (await detector.detect(video)).map(result => result.rawValue); }
-                catch (_) { decode = decoder(video); return decode(); }
+              decode = async crop => {
+                try { return (await detector.detect(crop)).map(result => result.rawValue); }
+                catch (_) { decode = decoder(); return decode(crop); }
               };
             }
           } catch (_) { /* 改用 ZXing */ }
         }
         if (token !== generation) return;
-        decode = decode || decoder(video);
+        decode = decode || decoder();
+        async function decodeGuide() {
+          const box = preview.getBoundingClientRect();
+          const frame = guide.getBoundingClientRect();
+          if (!box.width || !box.height || !video.videoWidth || !video.videoHeight) return [];
+          // Include 5% of the guide size on each side for barcodes near the edge.
+          const {x,y,width,height} = window.InvCore.guideToVideoRect({
+            videoW:video.videoWidth,videoH:video.videoHeight,boxW:box.width,boxH:box.height,
+            guide:{left:frame.left-box.left-frame.width*.05,top:frame.top-box.top-frame.height*.05,
+              width:frame.width*1.1,height:frame.height*1.1}
+          });
+          if (!width || !height) return [];
+          if (canvas.width !== width) canvas.width = width;
+          if (canvas.height !== height) canvas.height = height;
+          context.drawImage(video,x,y,width,height,0,0,width,height);
+          return decode(canvas);
+        }
         let previous = -Infinity;
         async function tick(time) {
           if (token !== generation) return;
@@ -74,7 +96,7 @@
             previous = time;
             try {
               const version = pauseVersion;
-              const codes = await decode();
+              const codes = await decodeGuide();
               for (const code of codes) {
                 if (token !== generation || paused || version !== pauseVersion) break;
                 onScan(code,'camera');

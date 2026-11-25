@@ -7,3 +7,4 @@ brief*.md
 secrets/
 deploy/
 .clasp.json
+tests/fixtures/pos-sample.xls

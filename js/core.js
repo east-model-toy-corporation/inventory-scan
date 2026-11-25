@@ -152,6 +152,17 @@
     }
     return results;
   }
-  return {searchMaster,clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
+  function guideToVideoRect({videoW,videoH,boxW,boxH,guide}) {
+    const scale = Math.max(boxW/videoW,boxH/videoH);
+    const sourceX = x => (x-boxW/2)/scale+videoW/2;
+    const sourceY = y => (y-boxH/2)/scale+videoH/2;
+    const clamp = (value,max) => Math.max(0,Math.min(max,value));
+    const x = clamp(Math.floor(sourceX(guide.left)),videoW);
+    const y = clamp(Math.floor(sourceY(guide.top)),videoH);
+    const right = clamp(Math.ceil(sourceX(guide.left+guide.width)),videoW);
+    const bottom = clamp(Math.ceil(sourceY(guide.top+guide.height)),videoH);
+    return {x,y,width:right-x,height:bottom-y};
+  }
+  return {guideToVideoRect,searchMaster,clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
     upsertScan,editLine,deduped,batch,acknowledged,itemStatus,summarize,itemRows,exportRows,groupRows,csv,filename};
 });
