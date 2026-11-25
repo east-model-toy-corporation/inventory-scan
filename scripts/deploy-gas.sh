@@ -8,7 +8,10 @@ node scripts/make-config.js
 cd deploy
 if [ ! -f .clasp.json ]; then
   clasp create-script --type sheets --title "條碼盤點紀錄" --rootDir .
+  # create 可能會拉回預設 appsscript.json，重新覆蓋成我們的版本
+  (cd .. && node scripts/prepare-deploy.js && node scripts/make-config.js)
 fi
+ls -la
 clasp push -f
 DEP_FILE=../secrets/deployment_id.txt
 if [ -s "$DEP_FILE" ]; then
