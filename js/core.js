@@ -27,29 +27,70 @@
     return digits.slice(0,point);
   }
   const masterIndex = items => new Map(items.map(item => [item.barcode,item]));
+  const upcAlternate = code => /^0\d{12}$/.test(code) ? code.slice(1) : /^\d{12}$/.test(code) ? '0' + code : '';
   function findProduct(master, code) {
-    const alternate = /^0\d{12}$/.test(code) ? code.slice(1) : /^\d{12}$/.test(code) ? '0' + code : '';
-    return master.get(code) || master.get(alternate);
+    return master.get(code) || master.get(upcAlternate(code));
   }
-  function parseMaster(rows) {
+  function suffixIndex(items) {
+    const index = new Map();
+    for (const item of items) {
+      const code = item.barcode;
+      for (let split = code.indexOf('-',1); split !== -1 && split < code.length-1; split = code.indexOf('-',split+1)) {
+        const base = code.slice(0,split);
+        if (!index.has(base)) index.set(base,[]);
+        index.get(base).push(item);
+      }
+    }
+    return index;
+  }
+  function findVariants(suffixes, code) {
+    return [...(suffixes.get(code) || []),...(suffixes.get(upcAlternate(code)) || [])];
+  }
+  function parseMaster(rows, sheet = '') {
     const aliases = [
-      ['條碼','barcode','國際條碼','jan','ean'], ['品名','商品名稱','name'],
-      ['帳面數量','帳面','庫存','數量','qty'], ['貨號','sku']
+      ['商品型號','型號','商品條碼','條碼','國際條碼','barcode','jan','ean'],
+      ['品名規格','品名','商品名稱','name'],
+      ['合計','庫存量','庫存','帳面數量','帳面','數量','qty'],
+      ['貨號','sku'], ['單價'], ['庫點'], ['架號']
     ];
-    const headers = (rows[0] || []).map(value => clean(String(value ?? '').replace(/\uFEFF/g,'')).toLowerCase());
-    const [code,name,qty,sku] = aliases.map(options => headers.findIndex(header => options.includes(header)));
-    if ([code,name,qty].includes(-1)) throw new Error('找不到條碼、品名或帳面數量欄位');
-    const items = new Map();
-    for (const row of rows.slice(1)) {
+    const headerColumns = row => {
+      const headers = (row || []).map(value => clean(String(value ?? '').replace(/\uFEFF/g,'')).toLowerCase());
+      return aliases.map(options => headers.findIndex(header => options.includes(header)));
+    };
+    const candidates = rows.slice(0,20).map(headerColumns);
+    const header = candidates.findIndex(columns => columns.slice(0,3).every(index => index !== -1));
+    if (header === -1) throw new Error('找不到條碼、品名或帳面數量欄位');
+    const [code,name,qty,sku,price,location,shelf] = candidates[header];
+    const items = new Map(), duplicates = new Set(), locations = new Set(), negativeQty = new Set();
+    const report = {headerRow:header+1,sheet,totalRows:rows.length-header-1,skippedTotals:0,blankBarcode:0};
+    for (const row of rows.slice(header+1)) {
+      if (!row || !row.some(value => clean(value))) continue;
       const barcode = barcodeText(row[code]);
-      if (!barcode) continue;
+      if (!barcode) { report.blankBarcode++; continue; }
+      if (['合計','總計','小計'].includes(barcode)) { report.skippedTotals++; continue; }
       if (barcode.length > 64) throw new Error('條碼最多 64 字');
       const bookQty = Number(clean(row[qty]).replace(/,/g,''));
       if (!Number.isFinite(bookQty)) throw new Error('帳面數量格式錯誤：' + barcode);
-      // 如有重複條碼，以最後一列的資料為準。
-      items.set(barcode,{barcode,name:clean(row[name]),bookQty,sku:clean(row[sku])});
+      if (bookQty < 0) negativeQty.add(barcode);
+      if (items.has(barcode)) duplicates.add(barcode);
+      const item = {barcode,name:clean(row[name]),bookQty,sku:clean(row[sku])};
+      if (price !== -1) {
+        const value = clean(row[price]).replace(/,/g,'');
+        const amount = Number(value);
+        item.price = value && Number.isFinite(amount) ? amount : value;
+      }
+      if (location !== -1) {
+        item.location = clean(row[location]);
+        if (item.location) locations.add(item.location);
+      }
+      if (shelf !== -1) item.shelf = clean(row[shelf]);
+      items.set(barcode,item);
     }
-    return [...items.values()];
+    const result = [...items.values()];
+    Object.assign(report,{negativeQty:[...negativeQty],duplicates:[...duplicates],locations:[...locations],
+      suffixed:result.filter(item => /.-.+/.test(item.barcode)).length});
+    Object.defineProperty(result,'report',{value:report});
+    return result;
   }
   const sameScope = (line, scope) => ['session','store','counter','device'].every(key => line[key] === scope[key]) && (line.zone || '') === (scope.zone || '');
   function upsertScan(lines, scope, barcode, name, qty, now = Date.now()) {
@@ -163,6 +204,6 @@
     const bottom = clamp(Math.ceil(sourceY(guide.top+guide.height)),videoH);
     return {x,y,width:right-x,height:bottom-y};
   }
-  return {guideToVideoRect,searchMaster,clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,parseMaster,sameScope,
+  return {guideToVideoRect,searchMaster,clean,random,taipeiDate,sessionName,sessionCode,barcodeText,masterIndex,findProduct,suffixIndex,findVariants,parseMaster,sameScope,
     upsertScan,editLine,deduped,batch,acknowledged,itemStatus,summarize,itemRows,exportRows,groupRows,csv,filename};
 });

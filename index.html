@@ -67,6 +67,7 @@
             <button id="load-master" type="button">從雲端試算表載入</button>
             <label>匯入 Excel／CSV<input type="file" id="master-file" accept=".xlsx,.xls,.csv"></label>
             <small id="master-count" role="status"></small>
+            <div id="master-report"></div>
           </div>
         </fieldset>
         <button id="begin" class="primary" type="submit">開始盤點</button>
@@ -191,6 +192,11 @@
         <button id="search-master" type="button">用品名搜尋</button>
         <button id="count-unknown" type="button" class="primary">直接計入</button>
         <button id="cancel-unknown" type="button">取消（不計入）</button>
+      </div>
+      <div id="variant-choices" class="stack" hidden>
+        <div id="variant-results" class="stack"></div>
+        <button id="count-variant-raw" type="button">直接計入原條碼</button>
+        <button id="cancel-variant" type="button">取消</button>
       </div>
       <div id="unknown-search" class="stack" hidden>
         <button id="back-to-choices" type="button">← 返回</button>

@@ -468,3 +468,60 @@ test('two devices pressing 開始盤點 at the same time for one store share a s
     expect(a.name).toMatch(/^大江 \d{4}\/\d{2}\/\d{2}$/);
   } finally { await otherContext.close(); }
 });
+
+test('POS BIFF8 import reports exceptions and counts under the selected master code',async ({page,server}) => {
+  const {makePosFixture} = require('../scripts/make-pos-fixture');
+  await open(page,server);
+  await configure(page,server);
+  await page.getByLabel('有商品主檔（對照帳面）').check();
+  await page.locator('#master-file').setInputFiles({name:'pos-synthetic.xls',mimeType:'application/vnd.ms-excel',
+    buffer:makePosFixture()});
+  await expect(page.locator('#master-count')).toHaveText('已讀取 30 筆（表頭第 4 列，略過合計列 1 列）');
+  const report = page.locator('#master-report');
+  await expect(report).toContainText('庫點：測試門市');
+  await expect(report).toContainText('庫點與所選門市');
+  for (const [label,code] of [['負庫存 1 筆','DEMO11'],['重複條碼 1 筆','0000000000003']]) {
+    await report.getByText(label,{exact:true}).click();
+    await expect(report.getByText(code,{exact:true})).toBeVisible();
+  }
+  await begin(page);
+  const manual = async code => {
+    const input = page.locator('#barcode');
+    await input.fill(code);
+    await input.press('Enter');
+  };
+  await manual('POSSINGLE');
+  await expect(page.locator('#last-scan')).toContainText('測試商品06');
+  await expect(page.locator('#last-scan')).toContainText('對應到 POSSINGLE-SMP');
+  await expect(page.locator('#lines [data-barcode="POSSINGLE-SMP"]')).toHaveCount(1);
+  await manual('POSMULTI');
+  const picker = page.getByRole('dialog',{name:'選擇主檔商品'});
+  await expect(picker.getByRole('button',{name:/POSMULTI-SMP.*帳面 7/})).toBeVisible();
+  await expect(picker.getByRole('button',{name:/POSMULTI-B.*帳面 8/})).toBeVisible();
+  await expect(picker.getByRole('button',{name:'直接計入原條碼'})).toBeVisible();
+  expect(await page.evaluate(() => InventoryApp.getState().scannerPaused)).toBe(true);
+  await picker.getByRole('button',{name:/POSMULTI-B/}).click();
+  await expect(picker).toBeHidden();
+  await expect(page.locator('#lines [data-barcode="POSMULTI-B"]')).toHaveCount(1);
+  await manual('POSBASE');
+  await expect(picker.getByRole('button',{name:/POSBASE ／ 帳面 9/})).toBeVisible();
+  await expect(picker.getByRole('button',{name:/POSBASE-SMP/})).toBeVisible();
+  await picker.getByRole('button',{name:'取消',exact:true}).click();
+  await expect(page.locator('#lines li')).toHaveCount(2);
+  await manual('POSMULTI');
+  await picker.getByRole('button',{name:'直接計入原條碼'}).click();
+  await expect(page.locator('#lines [data-barcode="POSMULTI"]')).toHaveCount(1);
+  await queue(page,0);
+  await summary(page);
+  await button(page,'重新整理').click();
+  await expect(page.locator('#summary-source')).toContainText('已載入全場資料');
+  await expect(itemRow(page,'POSSINGLE-SMP').locator('td').nth(3)).toHaveText('1');
+  await expect(itemRow(page,'POSMULTI-B').locator('td').nth(3)).toHaveText('1');
+  await expect(itemRow(page,'POSMULTI')).toContainText('主檔查無');
+
+  const pending = page.waitForEvent('download');
+  await button(page,'匯出 Excel').click();
+  const book = XLSX.read(await fs.readFile(await (await pending).path()));
+  const details = XLSX.utils.sheet_to_json(book.Sheets.明細,{header:1});
+  expect(details.slice(1).map(row => row[6]).sort()).toEqual(['POSMULTI','POSMULTI-B','POSSINGLE-SMP']);
+});

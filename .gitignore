@@ -8,3 +8,5 @@ secrets/
 deploy/
 .clasp.json
 tests/fixtures/pos-sample.xls
+
+tests/fixtures/pos-synthetic.xls

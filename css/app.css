@@ -171,10 +171,10 @@ body:not(.scan-compact) #scan-placeholder,body:not(.scan-compact) .compact-metri
 }
 #unknown-title { margin:-12px -12px 8px; padding:8px 12px; font-size:1.15rem; background:var(--red); color:#fff }
 #unknown-scan { margin-bottom:8px; font-size:.875rem; overflow-wrap:anywhere; font-weight:700 }
-#unknown-choices,#unknown-search { gap:6px }
-#unknown-search { display:flex; flex-direction:column; min-height:0 }
-#unknown-search > :not(#master-results) { flex:none }
-#master-results { min-height:0; overflow:auto; overscroll-behavior:contain; gap:6px; padding:3px }
+#unknown-choices,#unknown-search,#variant-choices { gap:6px }
+#unknown-search,#variant-choices { display:flex; flex-direction:column; min-height:0 }
+#unknown-search > :not(#master-results),#variant-choices > :not(#variant-results) { flex:none }
+#master-results,#variant-results { min-height:0; overflow:auto; overscroll-behavior:contain; gap:6px; padding:3px }
 #master-results p { margin:0 }
 #back-to-choices,.master-result { text-align:left }
 .master-result { display:grid; gap:4px; padding:8px 12px; overflow-wrap:anywhere }
@@ -197,3 +197,7 @@ body:not(.scan-compact) #scan-placeholder,body:not(.scan-compact) .compact-metri
   width:min(100%,360px); max-height:100%; overflow:auto; background:#fff;
   border-radius:14px; padding:14px;
 }
+
+#master-report { font-size:.875rem; overflow-wrap:anywhere }
+#master-report:empty { display:none }
+.pos-warning { color:#a34a00 }

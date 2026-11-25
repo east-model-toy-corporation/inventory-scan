@@ -25,7 +25,7 @@
   let summaryDue = false, nextSummaryAt = 0;
   let lookupToken = 0, lastMutation = 0;
   const seen = new Map();
-  let qtyEdit, unknownScan, zoneOpen = false, lastFeedback = null;
+  let qtyEdit, unknownScan, variantLine, zoneOpen = false, lastFeedback = null;
   const interval = Math.max(200,Number(new URLSearchParams(location.search).get('syncInterval')) || 3000);
   const localReady = Promise.all([S.load(),S.loadMasters()]).then(async ([rows,records]) => {
     masters = records;
@@ -41,7 +41,9 @@
     for (const line of rows) lastMutation = Math.max(lastMutation,Date.parse(line.updatedAt) || 0);
   });
   const values = () => [...lines.values()];
-  const itemsFor = code => masters.has(code) ? masters.get(code).items : [];
+  const emptyMaster = [];
+  const scanIndexes = new WeakMap();
+  const itemsFor = code => masters.has(code) ? masters.get(code).items : emptyMaster;
   const clock = value => new Date(value).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false});
   const deviceLabel = id => {
     if (id === device) return config.deviceName;
@@ -245,7 +247,28 @@
     }
     $('master-controls').hidden = lookingUp || $('store').value === '+' || chosen('mode') !== 'master' ||
       !!(preview && openPreview.masterCount);
-    $('master-count').textContent = '已載入 '+(draft ? draft.items.length : 0)+' 筆';
+    const report = draft && draft.items.report;
+    const count = draft ? draft.items.length : 0;
+    $('master-count').textContent = report && (report.headerRow > 1 || report.skippedTotals || report.locations.length) ?
+      '已讀取 '+count+' 筆（表頭第 '+report.headerRow+' 列，略過合計列 '+report.skippedTotals+' 列）' :
+      '已載入 '+count+' 筆';
+    const notes = [];
+    if (report) {
+      if (report.locations.length) {
+        notes.push(node('div','庫點：'+report.locations.join('、')));
+        if (report.locations.some(location => !location.includes(draft.store))) {
+          notes.push(node('div','庫點與所選門市「'+draft.store+'」不符','pos-warning'));
+        }
+      }
+      for (const [label,codes] of [['負庫存',report.negativeQty],['重複條碼',report.duplicates]]) {
+        const title = label+' '+codes.length+' 筆';
+        if (!codes.length) { notes.push(node('div',title)); continue; }
+        const details = node('details');
+        details.append(node('summary',title),node('div',codes.join('、')));
+        notes.push(details);
+      }
+    }
+    replace($('master-report'),...notes);
     $('load-master').disabled = !config.url;
     const activeMaster = active && active.mode === 'master';
     const connected = config.url && activeMaster && !active.local && (!active.cloud || active.cloud === config.url);
@@ -580,7 +603,18 @@
     if (!active || ending || view !== 'scan' || zoneOpen || unknownScan || (qtyEdit && source === 'camera')) return false;
     const raw = C.clean(code);
     if (!raw || raw.length > 64 || !Number.isInteger(qty) || qty < 1 || qty > 999999) return false;
-    const product = active.mode === 'master' && C.findProduct(C.masterIndex(itemsFor(active.code)),raw);
+    let matches = [], exact;
+    if (active.mode === 'master') {
+      const items = itemsFor(active.code);
+      if (!scanIndexes.has(items)) {
+        scanIndexes.set(items,{master:C.masterIndex(items),suffixes:C.suffixIndex(items)});
+      }
+      const {master,suffixes} = scanIndexes.get(items);
+      exact = C.findProduct(master,raw);
+      matches = C.findVariants(suffixes,raw);
+      if (exact) matches.unshift(exact);
+    }
+    const product = matches.length === 1 ? matches[0] : null;
     const barcode = product ? product.barcode : raw;
     if (C.deduped(seen,barcode,source,config.dedupe)) {
       lastFeedback = 'duplicate';
@@ -588,26 +622,39 @@
       return false;
     }
     if (active.mode === 'master' && !product) {
-      lastFeedback = 'notInMaster';
-      unknownScan = {barcode,qty};
+      const picking = matches.length > 1;
+      lastFeedback = picking ? 'chooseVariant' : 'notInMaster';
+      unknownScan = {barcode,qty,picking,exact};
       refreshPause();
-      feedback(true);
+      if (!picking) feedback(true);
       $('scan-note').textContent = '';
       $('unknown-scan').textContent = '條碼 '+barcode+' ／ 數量 '+qty;
+      $('unknown-title').textContent = picking ? '選擇主檔商品' : '主檔查無此商品';
       $('unknown-overlay').hidden = false;
-      showMasterSearch(false);
+      $('variant-choices').hidden = !picking;
+      if (picking) {
+        $('unknown-choices').hidden = $('unknown-search').hidden = true;
+        const options = matches.map(item => {
+          const option = button('',() => finishUnknown(true,item),'master-result');
+          option.append(node('strong',item.name || item.barcode),node('small',item.barcode+' ／ 帳面 '+item.bookQty));
+          return option;
+        });
+        replace($('variant-results'),...options);
+        options[0].focus();
+      } else showMasterSearch(false);
       renderScan();
       return false;
     }
-    return countScan(barcode,product,qty);
+    return countScan(barcode,product,qty,!!product && product !== exact);
   }
-  function countScan(barcode,product,qty) {
+  function countScan(barcode,product,qty,showVariant = false,confirmed = false) {
     const line = C.upsertScan(values(),scope(),barcode,product ? product.name : '',qty,mutationTime());
     if (line.qty > 999999) { toast('單筆數量最多 999,999 件'); return false; }
     lastId = line.id;
+    variantLine = showVariant ? line.id : null;
     $('scan-note').textContent = '';
     $('qty').value = 1;
-    if (active.mode !== 'master' || product) {
+    if (active.mode !== 'master' || product || confirmed) {
       lastFeedback = 'ok';
       feedback(false);
     }
@@ -670,11 +717,13 @@
   }
   function finishUnknown(count = false,product) {
     if (!unknownScan) return;
-    const {barcode,qty} = unknownScan;
+    const {barcode,qty,picking,exact} = unknownScan;
     unknownScan = null;
     $('unknown-overlay').hidden = true;
     $('qty').value = 1;
-    if (count && active && !ending) countScan(product ? product.barcode : barcode,product,qty);
+    if (count && active && !ending) {
+      countScan(product ? product.barcode : barcode,product,qty,picking && !!product && product !== exact,picking);
+    }
     renderScan();
     refreshPause();
     $('barcode').focus({preventScroll:true});
@@ -755,7 +804,7 @@
     $('last-controls').hidden = !!unknownScan;
     if (unknownScan) {
       $('last-scan').classList.add('last-unknown');
-      replace($('last-details'),node('h3','主檔查無此商品','unknown'),node('p',unknownScan.barcode));
+      replace($('last-details'),node('h3',unknownScan.picking ? '選擇主檔商品' : '主檔查無此商品',unknownScan.picking ? '' : 'unknown'),node('p',unknownScan.barcode));
       return;
     }
     if (!last || last.deleted) return;
@@ -780,7 +829,8 @@
         (diff > 0 ? '+' : '')+diff+' '+C.itemStatus(product.bookQty,total),diff > 0 ? 'positive' : diff < 0 ? 'negative' : '']);
     }
     metrics(detail,counts);
-    replace($('last-details'),heading,...(compare || last.zone ? [node('p',[compare ? last.barcode : '',last.zone].filter(Boolean).join(' ・ '))] : []),detail);
+    replace($('last-details'),heading,...(compare || last.zone ? [node('p',[compare ? last.barcode : '',last.zone].filter(Boolean).join(' ・ '))] : []),
+      ...(last.id === variantLine ? [node('small','對應到 '+last.barcode,'pos-warning')] : []),detail);
   }
   const summaryStatusClasses = {
     '盤盈':'surplus', '盤虧':'shortage', '相符':'matched', '主檔查無':'unknown', '未盤':'uncounted'
@@ -980,8 +1030,9 @@
       } else {
         book = XLSX.read(data,{type:'array',raw:true});
       }
-      const rows = XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]],{header:1,raw:true,defval:''});
-      draftMaster = {store,items:C.parseMaster(rows),imported:true};
+      const sheet = book.SheetNames[0];
+      const rows = XLSX.utils.sheet_to_json(book.Sheets[sheet],{header:1,raw:true,defval:'',range:0});
+      draftMaster = {store,items:C.parseMaster(rows,sheet),imported:true};
       showMaster();
     } catch (error) { toast(error.message || '無法讀取主檔'); }
     finally { $('master-file').value = ''; }
@@ -1077,6 +1128,8 @@
   $('cancel-zone').onclick = () => closeZone();
   $('search-master').onclick = () => showMasterSearch(true);
   $('back-to-choices').onclick = () => showMasterSearch(false);
+  $('count-variant-raw').onclick = () => finishUnknown(true);
+  $('cancel-variant').onclick = () => finishUnknown();
   $('count-unknown').onclick = () => finishUnknown(true);
   $('cancel-unknown').onclick = $('cancel-search').onclick = () => finishUnknown();
   $('master-query').oninput = renderMasterResults;
@@ -1088,7 +1141,8 @@
       else finishUnknown();
     }
     if (event.key === 'Tab') {
-      const pane = $(zoneOpen ? 'zone-dialog' : $('unknown-search').hidden ? 'unknown-choices' : 'unknown-search');
+      const pane = $(zoneOpen ? 'zone-dialog' : unknownScan.picking ? 'variant-choices' :
+        $('unknown-search').hidden ? 'unknown-choices' : 'unknown-search');
       const controls = [...pane.querySelectorAll('button,input')];
       const edge = event.shiftKey ? controls[0] : controls[controls.length-1];
       if (document.activeElement === edge || !pane.contains(document.activeElement)) {

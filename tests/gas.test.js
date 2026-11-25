@@ -289,3 +289,30 @@ test('legacy duplicate open sessions are closed in place, keeping the newest and
   assert.equal(gas.get({action:'openSession',store:'武昌'}).session.code,'NEW');
   assert.equal(gas.get({action:'session',code:'OLD'}).session.status,'已結束');
 });
+
+test('a 6000-item master formats barcode cells as text before a single batch write',() => {
+  const gas = createGas();
+  session(gas);
+  const sheet = gas.spreadsheet.getSheetByName('主檔');
+  const getRange = sheet.getRange.bind(sheet);
+  const operations = [];
+  sheet.getRange = (row,col,height,width) => {
+    const range = getRange(row,col,height,width);
+    const {setValues,setNumberFormat} = range;
+    range.setValues = values => {
+      operations.push(['write',row,col,height,width]);
+      return setValues(values);
+    };
+    range.setNumberFormat = format => {
+      if (col === 3) operations.push(['format',row,col,height,width,format]);
+      return setNumberFormat(format);
+    };
+    return range;
+  };
+  const items = Array.from({length:6000},(_,index) => ({
+    barcode:String(index).padStart(13,'0'),name:'測試商品'+index,bookQty:index,sku:''
+  }));
+  assert.equal(gas.post({action:'master',session:'S1',items,replace:true}).count,6000);
+  assert.deepEqual(operations,[['format',2,3,6000,1,'@'],['write',2,1,6000,6]]);
+  assert.deepEqual(rows(gas,'主檔').slice(1).map(row => row[2]),items.map(item => item.barcode));
+});
