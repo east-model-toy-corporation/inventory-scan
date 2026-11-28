@@ -8,8 +8,14 @@
   }
 
   function fitPreview(video,preview) {
-    if (!video.srcObject || video.parentElement !== preview) return;
-    // Reassert the preview-sized box when Safari learns or changes the stream dimensions.
+    if ((!video.srcObject && !video.currentSrc) || video.parentElement !== preview) return true;
+    const {width,height} = preview.getBoundingClientRect();
+    if (!width || !height) return false;
+
+    // Drop WebKit's cached video box before restoring the cover layout.
+    video.style.display = 'none';
+    void video.offsetHeight;
+    video.style.display = 'block';
     video.removeAttribute('width');
     video.removeAttribute('height');
     Object.assign(video.style,{
@@ -17,6 +23,7 @@
       minWidth:'100%',minHeight:'100%',maxWidth:'none',maxHeight:'none',
       objectFit:'cover',objectPosition:'center'
     });
+    return true;
   }
 
   function decoder() {
@@ -38,7 +45,16 @@
   }
   function create(video, onScan, onState) {
     const preview = video.parentElement;
-    const relayout = () => fitPreview(video,preview);
+    let previewRetry;
+    function relayout() {
+      cancelAnimationFrame(previewRetry);
+      function fit(retries) {
+        if (!fitPreview(video,preview) && retries > 0) {
+          previewRetry = requestAnimationFrame(() => fit(retries-1));
+        }
+      }
+      fit(4);
+    }
     for (const event of ['loadedmetadata','loadeddata','resize']) {
       video.addEventListener(event,relayout);
     }
@@ -53,6 +69,15 @@
     let stream, track, facing = 'environment', generation = 0, torch = false;
     let paused = false, pauseVersion = 0, idle = false, busy = false;
     let decodeTimer, idleTimer, decodeFrame, interval;
+
+    function relayoutAfterShow() {
+      const token = generation;
+      const refresh = () => {
+        if (token === generation) relayout();
+      };
+      requestAnimationFrame(() => requestAnimationFrame(refresh));
+      setTimeout(refresh,75);
+    }
 
     function clearDecodeTimer() {
       clearTimeout(decodeTimer);
@@ -111,6 +136,7 @@
     });
     function stop() {
       generation++;
+      cancelAnimationFrame(previewRetry);
       decodeFrame = null;
       clearDecodeTimer();
       clearTimeout(idleTimer);
@@ -149,6 +175,7 @@
         await video.play();
         if (token !== generation) return;
         relayout();
+        relayoutAfterShow();
         let decode;
         if ('BarcodeDetector' in window && params.get('engine') !== 'zxing') {
           try {
@@ -197,7 +224,7 @@
         onState(false,false,message);
       }
     }
-    return {start,stop,relayout,pause:() => {
+    return {start,stop,relayout,relayoutAfterShow,pause:() => {
       if (paused) return;
       paused = true;
       pauseVersion++;

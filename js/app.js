@@ -403,6 +403,8 @@
       else tab.removeAttribute('aria-current');
     }
     if (next === 'scan') {
+      unlockAudio();
+      scanner.relayoutAfterShow();
       manualExpanded = false;
       showManual();
       renderScan();
@@ -551,26 +553,41 @@
       $('end-session').disabled = false;
     }
   }
-  function unlockAudio() {
+  async function unlockAudio() {
     if (!config.beep) return;
     const Audio = window.AudioContext || window.webkitAudioContext;
     if (!Audio) return;
     try {
-      if (!audio) audio = new Audio();
-      if (audio.state !== 'running') audio.resume().catch(() => {});
+      if (!audio || audio.state === 'closed') audio = new Audio();
+      const context = audio;
+      if (context.state === 'running') return context;
+      try {
+        await context.resume();
+        if (context.state === 'running') return context;
+      } catch (_) { /* 嘗試重新建立音訊 */ }
+      if (!config.beep) return;
+      // Another gesture or scan may already have recovered the context.
+      if (audio === context && context.state !== 'running') {
+        audio = new Audio();
+        if (context.state !== 'closed') context.close().catch(() => {});
+      }
+      const retry = audio;
+      if (retry.state !== 'running') await retry.resume();
+      if (retry.state === 'running') return retry;
     } catch (_) { /* 繼續刷讀 */ }
   }
-  function feedback(unknown) {
+  async function feedback(unknown) {
     if (config.vibrate && navigator.vibrate) navigator.vibrate(unknown ? [200,100,200] : 60);
-    if (!config.beep || !audio || audio.state !== 'running') return;
+    const context = await unlockAudio();
+    if (!config.beep || !context || context.state !== 'running') return;
     try {
-      const start = audio.currentTime;
+      const start = context.currentTime;
       for (const offset of unknown ? [0,.25] : [0]) {
-        const tone = audio.createOscillator(), volume = audio.createGain();
+        const tone = context.createOscillator(), volume = context.createGain();
         tone.frequency.value = unknown ? 220 : 850;
         volume.gain.value = .12;
         tone.connect(volume);
-        volume.connect(audio.destination);
+        volume.connect(context.destination);
         tone.start(start+offset);
         tone.stop(start+offset+(unknown ? .15 : .095));
       }
@@ -940,6 +957,7 @@
     $('torch').hidden = !torch;
     $('torch').setAttribute('aria-pressed','false');
     $('camera-note').textContent = error;
+    if (running) scanner.relayoutAfterShow();
   });
   window.addEventListener('resize',updateViewport);
   if (viewport) {
@@ -1159,11 +1177,17 @@
       toast('已清除本機已上傳資料');
     } catch (error) { toast(error.message); }
   };
-  document.addEventListener('touchend',unlockAudio,{once:true});
-  document.addEventListener('click',unlockAudio,{once:true});
+  for (const event of ['pointerdown','pointerup','touchend','click']) {
+    document.addEventListener(event,unlockAudio);
+  }
+  window.addEventListener('pageshow',unlockAudio);
+  window.addEventListener('focus',unlockAudio);
   document.addEventListener('visibilitychange',() => {
     if (document.hidden) scanner.stop();
-    else syncNow(false);
+    else {
+      unlockAudio();
+      syncNow(false);
+    }
   });
   window.addEventListener('pagehide',() => {
     $('admin-password').value = '';

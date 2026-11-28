@@ -54,10 +54,33 @@ test('portrait preview stays covered on reopen, camera switch and scan tab retur
   ])).toEqual([null,null,'100%']);
   await assertVideoCoversPreview(page);
 
-  await page.getByRole('button',{name:'彙總',exact:true}).click();
+  await page.getByRole('button',{name:'設定開始',exact:true}).click();
   expect(await video.evaluate(element => element.srcObject === null)).toBe(true);
   await page.getByRole('button',{name:'刷讀',exact:true}).click();
   await openCamera.click();
+  await assertVideoCoversPreview(page);
+});
+
+test('portrait camera recovers when the scan section is hidden with a live stream',async ({page,server}) => {
+  await useNativeCameraSize(page);
+  await page.goto(server.appUrl+'/?engine=zxing');
+  await begin(page);
+  await page.getByRole('button',{name:'開啟鏡頭',exact:true}).click();
+  await assertVideoCoversPreview(page);
+
+  const sameStream = await page.locator('#video').evaluate(async video => {
+    const scan = document.querySelector('#scan');
+    const stream = video.srcObject;
+    scan.hidden = true;
+    video.style.width = '55%';
+    video.style.minWidth = '55%';
+    video.dispatchEvent(new Event('resize'));
+    // The first retry runs while the section is still hidden.
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    scan.hidden = false;
+    return video.srcObject === stream && stream.active;
+  });
+  expect(sameStream).toBe(true);
   await assertVideoCoversPreview(page);
 });
 
