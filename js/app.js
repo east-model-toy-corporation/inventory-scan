@@ -20,7 +20,7 @@
   let lastSession = S.get('lastSession',null), syncing;
   const summarySession = () => active || lastSession;
   const sessionName = C.sessionName;
-  let active = S.get('active',null), lines = new Map(), lastId, editingId, remote, view = 'start';
+  let active = S.get('active',null), lines = new Map(), lastId, remote, view = 'start';
   let retryAt = 0, delay = 2000, lastSync = '', syncError = '', toastTimer, audio;
   let summaryDue = false, nextSummaryAt = 0;
   let lookupToken = 0, lastMutation = 0;
@@ -29,6 +29,12 @@
   const interval = Math.max(200,Number(new URLSearchParams(location.search).get('syncInterval')) || 3000);
   const localReady = Promise.all([S.load(),S.loadMasters()]).then(async ([rows,records]) => {
     masters = records;
+    for (const session of Object.values(sessions)) {
+      if (session.pendingEnd) {
+        const {pendingEnd,...saved} = session;
+        rememberSession(saved);
+      }
+    }
     const legacy = S.get('masters',{});
     for (const {code,store,mode} of Object.values(sessions)) {
       if (mode !== 'master' || masters.has(code) || !Object.prototype.hasOwnProperty.call(legacy,store)) continue;
@@ -102,7 +108,7 @@
   }
   const uploadable = line => {
     const session = sessions[line.session];
-    return !session || (!session.local && !session.pending && !session.pendingEnd &&
+    return !session || (!session.local && !session.pending &&
       (!session.cloud || session.cloud === config.url));
   };
   function showQueue() {
@@ -115,7 +121,6 @@
     $('sync-status').textContent = config.url ? [
       !navigator.onLine ? '離線中' : '', lastSync ? '上次同步 '+clock(lastSync) : '',
       [...masters.values()].some(master => master.pending) ? '主檔待上傳' : '',
-      Object.values(sessions).some(session => session.pendingEnd) ? '結束盤點待同步' : '',
       rejected ? '場次已結束，'+rejected+' 筆未上傳' : '',
       legacyPending ? '舊版未同步場次可匯出本機備份' : '', syncError
     ].filter(Boolean).join(' · ') : '';
@@ -151,19 +156,13 @@
     if (!config.url || !navigator.onLine || (!force && Date.now() < retryAt)) return;
     const connection = {...config};
     const sameConnection = () => connection.url === config.url && connection.key === config.key;
-    const pendingEnds = Object.values(sessions).filter(session => !code && session.pendingEnd && session.cloud === connection.url);
     const inScope = line => (!code || code === line.session) && uploadable(line);
     const pendingMasters = [...masters.values()].filter(master => master.pending && inScope({session:master.code}));
-    if (!pendingEnds.length && !pendingMasters.length && !C.batch(values().filter(inScope)).length) {
+    if (!pendingMasters.length && !C.batch(values().filter(inScope)).length) {
       refreshAfterSync();
       return;
     }
     try {
-      for (const session of pendingEnds) {
-        const result = await api(connection,'endSession',{code:session.code,endedBy:session.endedBy},true);
-        if (!sameConnection()) return;
-        rememberSession({...result.session,cloud:session.cloud});
-      }
       let masterError;
       for (const master of pendingMasters) {
         if (masters.get(master.code) !== master) continue;
@@ -335,10 +334,7 @@
     const {session,masterCount} = result;
     if (authoritative) invalidateCachedSessions(store,connection.url,session && session.code);
     if (session) {
-      const saved = sessions[session.code];
-      if (!saved || !saved.pendingEnd) {
-        rememberSession({...session,status:'進行中',cloud:connection.url,local:!connection.url,pending:false});
-      }
+      rememberSession({...session,status:'進行中',cloud:connection.url,local:!connection.url,pending:false});
     }
     openPreview = result;
     if (!message) message = session ?
@@ -386,7 +382,7 @@
     $('zone-chip').title = zoneLabel;
     $('zone-chip').hidden = !active || view !== 'scan';
     $('switch').hidden = !active;
-    $('end-session').hidden = !active || !['scan','summary'].includes(view);
+    $('end-session-panel').hidden = !active;
   }
   function go(next) {
     if ((next === 'scan' && !active) || (next === 'summary' && !summarySession())) { toast('請先開始盤點'); return; }
@@ -396,6 +392,7 @@
       if (unknownScan) finishUnknown();
       scanner.stop();
     }
+    if (next !== 'settings' && !$('end-overlay').hidden) closeEndDialog();
     view = next;
     identity();
     if (next === 'start') storeChanged();
@@ -430,11 +427,6 @@
       if (connection.url !== config.url || connection.key !== config.key) throw new Error('雲端設定已變更，請重新開始盤點');
       let session, joined;
       if (config.url) {
-        const closing = Object.values(sessions).find(item => item.store === store && item.pendingEnd && item.cloud === config.url);
-        if (closing) {
-          await syncNow();
-          if (sessions[closing.code].pendingEnd) throw new Error('需連線才能完成上一場盤點');
-        }
         try {
           if (!navigator.onLine) throw Object.assign(new Error(),{unavailable:true});
           ({session,joined} = await api(connection,'startSession',{store,mode,createdBy:counter},true));
@@ -473,7 +465,7 @@
       active = {...session,counter,zone};
       rememberZone(zone);
       save('counter',counter);
-      lastId = editingId = remote = null;
+      lastId = remote = null;
       summaryDue = false;
       nextSummaryAt = 0;
       seen.clear();
@@ -509,50 +501,51 @@
     showQueue();
     if (count) toast('場次已結束，'+count+' 筆未上傳');
   }
-  async function endActiveSession() {
+  const reconnectToEnd = '請恢復連線後再輸入管理密碼，以結束盤點';
+  function openEndDialog() {
+    if (!active || ending || $('begin').disabled) return;
+    if (active.local || !config.url) { toast('此場次僅存於本機，無法連線驗證管理密碼'); return; }
+    if (!navigator.onLine) { toast(reconnectToEnd); return; }
+    $('end-session-name').textContent = sessionName(active);
+    $('admin-password').value = '';
+    $('end-overlay').hidden = false;
+    $('admin-password').focus();
+  }
+  function closeEndDialog() {
+    $('admin-password').value = '';
+    $('end-overlay').hidden = true;
+    $('end-session').focus();
+  }
+  async function endActiveSession(event) {
+    event.preventDefault();
     const current = active;
-    if (!current || ending || $('begin').disabled ||
-        !window.confirm('確定結束『'+sessionName(current)+'』盤點？結束後無法再刷讀，下次選此門市會開新場次')) return;
-    finishQty();
+    const password = $('admin-password').value;
+    closeEndDialog();
+    if (!current || ending || !password) return;
+    const connection = {...config};
+    const cloud = current.cloud || connection.url;
     ending = true;
     $('end-session').disabled = true;
-    scanner.stop();
-    const cloud = current.local ? '' : current.cloud || config.url;
     try {
-      let ended = {...current,status:'已結束',endedAt:new Date().toISOString(),endedBy:current.counter};
-      if (cloud) {
-        if (cloud !== config.url) throw new Error('請先恢復此場次的雲端連線設定');
-        const pending = () => values().filter(line => line.session === current.code && line.dirty).length;
-        const remaining = () => pending() + Number(!!(masters.get(current.code) || {}).pending);
-        await syncing;
-        let previous;
-        do {
-          previous = remaining();
-          await syncNow(true,current.code);
-        } while (remaining() && remaining() < previous);
-        if (active !== current) return;
-        const confirmPending = () => window.confirm('尚有資料未同步。確定結束盤點？未上傳的明細將保留在本機備份。');
-        let confirmed = false;
-        if (!navigator.onLine || remaining()) {
-          if (!confirmPending()) return;
-          confirmed = true;
-        }
-        try {
-          if (!navigator.onLine) throw Object.assign(new Error(),{unavailable:true});
-          const result = await api(config,'endSession',{code:current.code,endedBy:current.counter},true);
-          ended = {...result.session,cloud};
-        } catch (error) {
-          if (!error.unavailable) throw error;
-          if (!confirmed && !confirmPending()) return;
-          ended.pendingEnd = true;
-          ended.cloud = cloud;
-        }
-        rememberSession(ended);
-        if (remaining()) await rejectEnded(current.code);
-      }
-      closeSession(ended);
+      if (current.local || !cloud || cloud !== connection.url) throw new Error('請先恢復此場次的雲端連線設定');
+      if (!navigator.onLine) throw new Error(reconnectToEnd);
+      const remaining = () => values().filter(line => line.session === current.code && line.dirty).length +
+        Number(!!(masters.get(current.code) || {}).pending);
+      await syncing;
+      let previous;
+      do {
+        previous = remaining();
+        await syncNow(true,current.code);
+      } while (remaining() && remaining() < previous);
+      if (active !== current) return;
+      if (connection.url !== config.url || connection.key !== config.key) throw new Error('雲端設定已變更，請重新輸入管理密碼');
+      if (!navigator.onLine) throw new Error(reconnectToEnd);
+      if (remaining() && !window.confirm('尚有資料未同步。確定結束盤點？未上傳的明細將保留在本機備份。')) return;
+      const result = await api(connection,'endSession',{code:current.code,endedBy:current.counter,password},true);
+      closeSession({...result.session,cloud});
+      if (remaining()) await rejectEnded(current.code);
       showQueue();
-    } catch (error) { toast(error.message); }
+    } catch (error) { toast(error.unavailable ? reconnectToEnd : error.message); }
     finally {
       ending = false;
       $('end-session').disabled = false;
@@ -733,7 +726,6 @@
     if (!active || ending || !current || current.session !== active.code || current.deleted || current.rejected) return;
     if (!Number.isInteger(qty) || qty < 0 || qty > 999999) { toast('請輸入 0 到 999,999 的整數'); return; }
     if (qty === 0 && !window.confirm('確定刪除此筆刷讀明細？')) return;
-    editingId = null;
     lastId = line.id;
     record(C.editLine(current,{qty,deleted:qty === 0},mutationTime()));
   }
@@ -761,43 +753,6 @@
   }
   function renderScan() {
     if (!active) return;
-    const current = scope();
-    const visible = values().filter(line => C.sameScope(line,{...current,zone:line.zone}) && !line.deleted)
-      .sort((a,b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
-    $('scan-totals').textContent = '品項數 '+new Set(visible.map(line => line.barcode)).size+' ／ 總件數 '+visible.reduce((n,line) => n+line.qty,0);
-    const master = C.masterIndex(itemsFor(active.code));
-    const compare = active.mode === 'master';
-    const filter = C.clean($('filter-lines').value).toLowerCase();
-    const rows = visible.filter(line => (line.name+' '+line.barcode+' '+line.zone).toLowerCase().includes(filter)).map(line => {
-      const product = compare && C.findProduct(master,line.barcode);
-      const row = node('li');
-      row.dataset.barcode = line.barcode;
-      const title = node('div',null,'line-text');
-      title.append(node('strong',product ? product.name || line.barcode : line.name || line.barcode));
-      if (line.name || product) title.append(node('small',line.barcode));
-      if (line.zone) title.append(node('small',line.zone,'zone-tag'));
-      if (compare && !product) title.append(node('small','主檔查無','unknown'));
-      const actions = node('div',null,'line-actions');
-      if (editingId === line.id) {
-        const form = node('form',null,'line-actions');
-        const input = node('input');
-        Object.assign(input,{type:'number',value:line.qty,min:0,max:999999,required:true,inputMode:'numeric'});
-        input.setAttribute('aria-label','編輯數量');
-        const submit = node('button','儲存');
-        form.append(input,submit,button('取消',() => { editingId = null; renderScan(); }));
-        form.addEventListener('submit',event => { event.preventDefault(); update(line,input.valueAsNumber); });
-        actions.append(form);
-      } else actions.append(button('−',() => update(line,line.qty-1)),
-        button(line.qty,() => {
-          editingId = line.id;
-          renderScan();
-          const input = $('lines').querySelector('input');
-          if (input) { input.focus(); input.select(); }
-        }),button('＋',() => update(line,line.qty+1)),button('刪除',() => update(line,0),'danger'));
-      row.append(title,actions);
-      return row;
-    });
-    replace($('lines'),...rows);
     const last = lines.get(lastId);
     $('last-scan').hidden = !unknownScan && (!last || last.deleted);
     $('scan-placeholder').hidden = !$('last-scan').hidden;
@@ -808,6 +763,8 @@
       return;
     }
     if (!last || last.deleted) return;
+    const master = C.masterIndex(itemsFor(active.code));
+    const compare = active.mode === 'master';
     const product = compare && C.findProduct(master,last.barcode);
     $('last-scan').classList.toggle('last-unknown',compare && !product);
     if (!qtyEdit) $('last-qty').value = last.qty;
@@ -965,18 +922,18 @@
     }
   }
   function updateViewport() {
-    document.body.style.setProperty('--vvh',viewport.height+'px');
-    document.body.style.setProperty('--vv-top',viewport.offsetTop+'px');
-    document.body.classList.toggle('keyboard-open',viewport.height < window.innerHeight-100);
+    if (viewport) {
+      document.body.style.setProperty('--vvh',viewport.height+'px');
+      document.body.style.setProperty('--vv-top',viewport.offsetTop+'px');
+      document.body.classList.toggle('keyboard-open',viewport.height < window.innerHeight-100);
+    }
+    scanner.relayout();
     keepQtyVisible();
   }
-  if (viewport) {
-    viewport.addEventListener('resize',updateViewport);
-    viewport.addEventListener('scroll',updateViewport);
-    updateViewport();
-  }
   const scanner = window.InvScanner.create($('video'),handleScan,(running,torch,error) => {
-    document.body.classList.toggle('scan-compact',running && view === 'scan');
+    const compact = running && view === 'scan';
+    document.documentElement.classList.toggle('scan-compact',compact);
+    document.body.classList.toggle('scan-compact',compact);
     $('camera').textContent = running ? '停止' : '開啟鏡頭';
     $('preview').hidden = !running;
     $('camera-preview').hidden = !running && !qtyEdit;
@@ -984,9 +941,26 @@
     $('torch').setAttribute('aria-pressed','false');
     $('camera-note').textContent = error;
   });
+  window.addEventListener('resize',updateViewport);
+  if (viewport) {
+    viewport.addEventListener('resize',updateViewport);
+    viewport.addEventListener('scroll',updateViewport);
+  }
+  updateViewport();
   $('setup-settings').onclick = () => go('settings');
   for (const tab of document.querySelectorAll('[data-view]')) tab.onclick = () => go(tab.dataset.view);
-  $('end-session').onclick = endActiveSession;
+  $('end-session').onclick = openEndDialog;
+  $('end-form').onsubmit = endActiveSession;
+  $('cancel-end').onclick = closeEndDialog;
+  $('end-overlay').onkeydown = event => {
+    if (event.key === 'Escape') closeEndDialog();
+    if (event.key !== 'Tab') return;
+    const first = $('admin-password'), last = $('cancel-end');
+    if (event.shiftKey ? document.activeElement === first : document.activeElement === last) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    }
+  };
   $('switch').onclick = () => go('start');
   $('store').onchange = storeChanged;
   $('add-store').onclick = () => {
@@ -1157,7 +1131,6 @@
     try { $('torch').setAttribute('aria-pressed',String(await scanner.toggleTorch())); }
     catch (_) { toast('無法切換手電筒'); }
   };
-  $('filter-lines').oninput = renderScan;
   $('refresh').onclick = () => refresh();
   $('filter-summary').onchange = renderSummary;
   $('export-xlsx').onclick = () => exportSummary('xlsx');
@@ -1192,7 +1165,11 @@
     if (document.hidden) scanner.stop();
     else syncNow(false);
   });
-  window.addEventListener('pagehide',() => scanner.stop());
+  window.addEventListener('pagehide',() => {
+    $('admin-password').value = '';
+    $('end-overlay').hidden = true;
+    scanner.stop();
+  });
   window.addEventListener('online',async () => { showQueue(); if (!ending) await syncNow(); if (view === 'start') storeChanged(); });
   window.addEventListener('offline',showQueue);
   window.InventoryApp = {handleScan,syncNow,getState:() => ({

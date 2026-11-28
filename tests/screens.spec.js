@@ -42,10 +42,11 @@ test('capture iPhone 14 views and the session banner',async ({browser,server,bro
     await scan(page,'4904810049586','manual',12);
     await scan(page,'TOY-A104','manual',3);
     await capture('03-scan-nomaster');
-    await expect(page.locator('#end-session')).toBeVisible();
+    await expect(page.locator('#end-session')).toBeHidden();
     await capture('08-session-banner');
     await expect(page.locator('#queue')).toHaveText('待上傳 0 筆');
     await page.getByRole('button',{name:'設定',exact:true}).click();
+    await expect(page.locator('#end-session')).toBeVisible();
     await capture('05-settings');
     await page.getByRole('button',{name:'刷讀',exact:true}).click();
     await context.setOffline(true);

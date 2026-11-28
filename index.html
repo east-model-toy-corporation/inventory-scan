@@ -21,7 +21,7 @@
     <header class="app-header">
       <div class="wrap">
         <div class="heading"><h1>條碼盤點</h1><span id="queue" class="badge" role="status"></span></div>
-        <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="zone-chip" type="button" aria-haspopup="dialog" aria-controls="zone-dialog" hidden></button><button id="end-session" type="button" hidden>結束盤點</button><button id="switch" type="button" hidden>切換</button></div>
+        <div class="session-bar"><span id="identity">尚未開始盤點</span><button id="zone-chip" type="button" aria-haspopup="dialog" aria-controls="zone-dialog" hidden></button><button id="switch" type="button" hidden>切換</button></div>
         <button id="rejected-backup" type="button" hidden>匯出本機備份</button><small id="sync-status"></small>
       </div>
     </header>
@@ -77,7 +77,11 @@
       <h2>刷讀</h2>
       <div class="panel stack" id="camera-panel">
         <div id="camera-preview" class="camera-preview" hidden>
-          <div id="preview" hidden><video id="video" playsinline muted autoplay></video><div class="guide"></div></div>
+          <div id="preview" hidden>
+            <video id="video" playsinline muted autoplay></video>
+            <div class="guide"></div>
+            <button id="scan-idle" type="button" hidden>一段時間沒有掃到條碼，已暫停辨識以減少發熱。點一下繼續掃描</button>
+          </div>
           <div id="scan-paused" role="status" hidden>⏸ 辨識暫停中・改完按「確定，繼續掃描」</div>
         </div>
         <div class="actions camera-actions">
@@ -114,12 +118,6 @@
         </form>
         <small id="scan-note" role="status"></small>
       </div>
-
-      <div class="panel stack">
-        <div class="heading"><h3>刷讀明細</h3><small id="scan-totals"></small></div>
-        <label>搜尋條碼或品名<input id="filter-lines" type="search"></label>
-        <ul class="lines" id="lines"></ul>
-      </div>
     </section>
     <section id="summary" hidden>
       <div class="heading"><h2>彙總</h2><button id="refresh">重新整理</button></div>
@@ -145,6 +143,10 @@
     </section>
     <section id="settings" hidden>
       <h2>設定</h2>
+      <div id="end-session-panel" class="panel stack" hidden>
+        <p>結束盤點需要管理密碼。結束後無法再刷讀此場次。</p>
+        <button id="end-session" type="button" class="danger" aria-haspopup="dialog" aria-controls="end-dialog">結束盤點</button>
+      </div>
       <div class="panel stack">
         <h3>雲端連線</h3>
         <label>GAS API 網址<input id="url" type="url" inputmode="url" placeholder="https://…/exec" autocomplete="off"></label>
@@ -161,7 +163,7 @@
       </div>
       <div class="panel stack">
         <h3>自訂門市管理</h3>
-        <ul id="custom-stores" class="lines"></ul>
+        <ul id="custom-stores"></ul>
       </div>
       <div class="panel stack">
         <h3>本機資料</h3>
@@ -171,6 +173,20 @@
     </section>
   </main>
   <div id="toast" role="status" hidden></div>
+  <div id="end-overlay" hidden>
+    <div id="end-dialog" role="dialog" aria-modal="true" aria-labelledby="end-title" aria-describedby="end-warning" class="stack">
+      <h2 id="end-title">結束盤點</h2>
+      <p id="end-session-name"></p>
+      <p id="end-warning">結束後無法再刷讀此場次，下次選擇此門市會開新場次。</p>
+      <form id="end-form" class="stack" method="post">
+        <label>管理密碼<input type="password" autocomplete="current-password" id="admin-password" required></label>
+        <div class="actions">
+          <button class="danger" type="submit">確定</button>
+          <button id="cancel-end" type="button">取消</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <div id="zone-overlay" hidden>
     <div id="zone-dialog" role="dialog" aria-modal="true" aria-labelledby="zone-title" class="stack">
       <h3 id="zone-title">變更區域</h3>

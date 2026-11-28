@@ -151,6 +151,7 @@ function endSession(s,body) {
   const rows = s.場次.getDataRange().getValues();
   const index = rows.findIndex((row,i) => i > 0 && clean(row[0]) === code);
   if (index < 0) throw new Error('場次不存在');
+  verifyAdminPassword(code,body.password);
   const row = rows[index];
   if (row[6] !== '已結束') {
     row.splice(6,3,'已結束',taipeiTime(Date.now()),endedBy);
@@ -345,6 +346,38 @@ function route(s, body, post) {
 function sha256hex(key) {
   return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,key,Utilities.Charset.UTF_8)
     .map(byte => (byte & 255).toString(16).padStart(2,'0')).join('');
+}
+function verifyAdminPassword(code,password) {
+  const cache = typeof CacheService === 'undefined' ? null : CacheService.getScriptCache();
+  const props = cache ? null : PropertiesService.getScriptProperties();
+  const key = 'admin_end_'+sha256hex(code);
+  const raw = cache ? cache.get(key) : props.getProperty(key);
+  const now = Date.now();
+  const lockoutSeconds = 600;
+  const saved = raw && JSON.parse(raw);
+  const attempts = saved && saved.until > now ? saved : {count:0};
+  if (attempts.count >= 5) throw new Error('嘗試次數過多，請稍後再試');
+
+  let valid = false;
+  if (typeof password === 'string' && password &&
+      typeof ADMIN_PASSWORD_SALT === 'string' && typeof ADMIN_PASSWORD_SHA256 === 'string') {
+    const digest = sha256hex(ADMIN_PASSWORD_SALT+password);
+    let difference = digest.length ^ ADMIN_PASSWORD_SHA256.length;
+    for (let i = 0; i < digest.length; i++) {
+      difference |= digest.charCodeAt(i) ^ ADMIN_PASSWORD_SHA256.charCodeAt(i);
+    }
+    valid = difference === 0;
+  }
+  if (valid) {
+    if (cache) cache.remove(key);
+    else if (raw) props.deleteProperty(key);
+    return;
+  }
+
+  const failure = JSON.stringify({count:attempts.count+1,until:now+lockoutSeconds*1000});
+  if (cache) cache.put(key,failure,lockoutSeconds);
+  else props.setProperty(key,failure);
+  throw new Error('管理密碼錯誤');
 }
 function authorize(key) {
   const props = PropertiesService.getScriptProperties();

@@ -63,7 +63,7 @@ class Sheet {
   deleteRows(start,count) { this.rows.splice(start-1,count); }
 }
 
-function createGas({key = 'test-key',keyHash, onLockWait} = {}) {
+function createGas({key = 'test-key',keyHash, onLockWait, useCache = true} = {}) {
   const sheets = new Map();
   const props = new Map();
   let locked = false;
@@ -87,7 +87,8 @@ function createGas({key = 'test-key',keyHash, onLockWait} = {}) {
       releaseLock() { locked = false; }
     })},
     PropertiesService:{getScriptProperties:() => ({
-      getProperty:name => props.get(name) || null,setProperty:(name,value) => props.set(name,value)
+      getProperty:name => props.get(name) || null,setProperty:(name,value) => props.set(name,value),
+      deleteProperty:name => props.delete(name)
     })},
     Utilities:{
       DigestAlgorithm:{SHA_256:'sha256'},Charset:{UTF_8:'utf8'},
@@ -102,6 +103,16 @@ function createGas({key = 'test-key',keyHash, onLockWait} = {}) {
     Session:{getScriptTimeZone:() => 'Asia/Taipei'},
     Logger:{log() {}}
   });
+  if (useCache) {
+    const entries = new Map();
+    context.CacheService = {getScriptCache:() => ({
+      get:name => entries.get(name) || null,
+      put:(name,value) => entries.set(name,value),
+      remove:name => entries.delete(name)
+    })};
+  }
+  context.ADMIN_PASSWORD_SALT = 'mock-admin-salt';
+  context.ADMIN_PASSWORD_SHA256 = createHash('sha256').update(context.ADMIN_PASSWORD_SALT+'test-admin').digest('hex');
   if (keyHash !== undefined) context.API_KEY_SHA256 = keyHash;
   source.runInContext(context);
   const decode = output => JSON.parse(output.getContent());

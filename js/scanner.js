@@ -1,5 +1,24 @@
 (function () {
   const formats = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39'];
+  const DECODE_INTERVALS = Object.freeze({barcodeDetector:120,zxing:190});
+
+  function cropDrawSize(width,height) {
+    const scale = Math.min(1,720/Math.max(width,height));
+    return {width:Math.max(1,Math.round(width*scale)),height:Math.max(1,Math.round(height*scale))};
+  }
+
+  function fitPreview(video,preview) {
+    if (!video.srcObject || video.parentElement !== preview) return;
+    // Reassert the preview-sized box when Safari learns or changes the stream dimensions.
+    video.removeAttribute('width');
+    video.removeAttribute('height');
+    Object.assign(video.style,{
+      position:'absolute',inset:'0',width:'100%',height:'100%',
+      minWidth:'100%',minHeight:'100%',maxWidth:'none',maxHeight:'none',
+      objectFit:'cover',objectPosition:'center'
+    });
+  }
+
   function decoder() {
     const z = window.ZXing;
     const reader = new z.MultiFormatReader();
@@ -19,14 +38,84 @@
   }
   function create(video, onScan, onState) {
     const preview = video.parentElement;
+    const relayout = () => fitPreview(video,preview);
+    for (const event of ['loadedmetadata','loadeddata','resize']) {
+      video.addEventListener(event,relayout);
+    }
     const guide = preview.querySelector('.guide');
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d',{willReadFrequently:true});
-    let stream, track, frame, facing = 'environment', generation = 0, torch = false;
-    let paused = false, pauseVersion = 0;
+    const idleOverlay = preview.querySelector('#scan-idle');
+    const params = new URLSearchParams(location.search);
+    const idleOverride = Number(params.get('idlePause'));
+    const idleDelay = Number.isFinite(idleOverride) && params.get('idlePause')?.trim() ?
+      Math.max(500,idleOverride) : 60000;
+    let stream, track, facing = 'environment', generation = 0, torch = false;
+    let paused = false, pauseVersion = 0, idle = false, busy = false;
+    let decodeTimer, idleTimer, decodeFrame, interval;
+
+    function clearDecodeTimer() {
+      clearTimeout(decodeTimer);
+      decodeTimer = null;
+    }
+    function resetIdleTimer() {
+      clearTimeout(idleTimer);
+      if (!decodeFrame || paused || idle) return;
+      idleTimer = setTimeout(() => {
+        idle = true;
+        pauseVersion++;
+        clearDecodeTimer();
+        idleOverlay.hidden = false;
+      },idleDelay);
+    }
+    function scheduleDecode() {
+      if (decodeFrame && !paused && !idle && !busy && decodeTimer == null) {
+        decodeTimer = setTimeout(tick,interval);
+      }
+    }
+    async function tick() {
+      decodeTimer = null;
+      if (!decodeFrame || paused || idle || busy) return;
+      if (video.readyState < 2) {
+        scheduleDecode();
+        return;
+      }
+      const token = generation;
+      const version = pauseVersion;
+      busy = true;
+      try {
+        const codes = await decodeFrame();
+        for (const code of codes) {
+          if (token !== generation || version !== pauseVersion) break;
+          if (!code) continue;
+          resetIdleTimer();
+          onScan(code,'camera');
+        }
+      } catch (_) {
+        if (token === generation) {
+          stop();
+          onState(false,false,'無法辨識鏡頭畫面，請重新開啟鏡頭');
+        }
+      } finally {
+        busy = false;
+        scheduleDecode();
+      }
+    }
+    preview.addEventListener('click',() => {
+      if (!idle || paused) return;
+      relayout();
+      idle = false;
+      idleOverlay.hidden = true;
+      resetIdleTimer();
+      scheduleDecode();
+    });
     function stop() {
       generation++;
-      if (frame != null) cancelAnimationFrame(frame);
+      decodeFrame = null;
+      clearDecodeTimer();
+      clearTimeout(idleTimer);
+      idle = false;
+      idleOverlay.hidden = true;
       if (stream) stream.getTracks().forEach(item => item.stop());
       stream = track = null;
       video.srcObject = null;
@@ -43,7 +132,7 @@
         let media;
         try {
           media = await navigator.mediaDevices.getUserMedia({video:{facingMode,
-            width:{ideal:1280},height:{ideal:720},aspectRatio:{ideal:16/9}},audio:false});
+            width:{ideal:1280,max:1920},height:{ideal:720,max:1080},aspectRatio:{ideal:16/9}},audio:false});
         } catch (error) {
           if (error.name !== 'OverconstrainedError' || token !== generation) throw error;
           media = await navigator.mediaDevices.getUserMedia({video:{facingMode}});
@@ -58,22 +147,29 @@
         onState(true,!!capabilities.torch,'');
         video.srcObject = stream;
         await video.play();
+        if (token !== generation) return;
+        relayout();
         let decode;
-        if ('BarcodeDetector' in window && new URLSearchParams(location.search).get('engine') !== 'zxing') {
+        if ('BarcodeDetector' in window && params.get('engine') !== 'zxing') {
           try {
             const supported = await window.BarcodeDetector.getSupportedFormats();
             if (formats.every(format => supported.includes(format))) {
               const detector = new window.BarcodeDetector({formats});
               decode = async crop => {
                 try { return (await detector.detect(crop)).map(result => result.rawValue); }
-                catch (_) { decode = decoder(); return decode(crop); }
+                catch (_) {
+                  decode = decoder();
+                  if (token === generation) interval = DECODE_INTERVALS.zxing;
+                  return [];
+                }
               };
             }
           } catch (_) { /* 改用 ZXing */ }
         }
         if (token !== generation) return;
+        interval = decode ? DECODE_INTERVALS.barcodeDetector : DECODE_INTERVALS.zxing;
         decode = decode || decoder();
-        async function decodeGuide() {
+        decodeFrame = function decodeGuide() {
           const box = preview.getBoundingClientRect();
           const frame = guide.getBoundingClientRect();
           if (!box.width || !box.height || !video.videoWidth || !video.videoHeight) return [];
@@ -84,31 +180,14 @@
               width:frame.width*1.1,height:frame.height*1.1}
           });
           if (!width || !height) return [];
-          if (canvas.width !== width) canvas.width = width;
-          if (canvas.height !== height) canvas.height = height;
-          context.drawImage(video,x,y,width,height,0,0,width,height);
+          const draw = cropDrawSize(width,height);
+          if (canvas.width !== draw.width) canvas.width = draw.width;
+          if (canvas.height !== draw.height) canvas.height = draw.height;
+          context.drawImage(video,x,y,width,height,0,0,draw.width,draw.height);
           return decode(canvas);
-        }
-        let previous = -Infinity;
-        async function tick(time) {
-          if (token !== generation) return;
-          if (!paused && video.readyState >= 2 && time-previous >= 120) {
-            previous = time;
-            try {
-              const version = pauseVersion;
-              const codes = await decodeGuide();
-              for (const code of codes) {
-                if (token !== generation || paused || version !== pauseVersion) break;
-                onScan(code,'camera');
-              }
-            } catch (_) {
-              if (token === generation) { stop(); onState(false,false,'無法辨識鏡頭畫面，請重新開啟鏡頭'); }
-              return;
-            }
-          }
-          if (token === generation) frame = requestAnimationFrame(tick);
-        }
-        frame = requestAnimationFrame(tick);
+        };
+        resetIdleTimer();
+        scheduleDecode();
       } catch (error) {
         if (token !== generation) return;
         stop();
@@ -118,8 +197,20 @@
         onState(false,false,message);
       }
     }
-    return {start,stop,pause:() => { paused = true; pauseVersion++; },
-      resume:() => { paused = false; },toggle:() => stream ? stop() : start(),switchCamera:() => {
+    return {start,stop,relayout,pause:() => {
+      if (paused) return;
+      paused = true;
+      pauseVersion++;
+      clearDecodeTimer();
+      resetIdleTimer();
+      idleOverlay.hidden = true;
+    },resume:() => {
+      if (!paused) return;
+      paused = false;
+      idleOverlay.hidden = !idle;
+      resetIdleTimer();
+      scheduleDecode();
+    },toggle:() => stream ? stop() : start(),switchCamera:() => {
       facing = facing === 'environment' ? 'user' : 'environment';
       return start();
     },toggleTorch:async () => {
@@ -129,5 +220,7 @@
       return torch;
     }};
   }
-  window.InvScanner = {create};
+  const scanner = {create,DECODE_INTERVALS,cropDrawSize};
+  if (typeof module === 'object' && module.exports) module.exports = scanner;
+  else window.InvScanner = scanner;
 })();

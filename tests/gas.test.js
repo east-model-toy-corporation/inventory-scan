@@ -259,7 +259,7 @@ test('open sessions keep their Taipei start date across days and close independe
   assert.equal(getOpen('武昌').masterCount,1);
   const line = {...base,session:session.code,store:session.store};
   assert.equal(upload(gas,line).acks.length,1);
-  const end = {action:'endSession',code:session.code,endedBy:'小陳'};
+  const end = {action:'endSession',code:session.code,endedBy:'小陳',password:'test-admin'};
   const closed = gas.post(end).session;
   assert.equal(closed.status,'已結束');
   assert.equal(closed.endedAt,new Date(now).toISOString());
@@ -275,6 +275,40 @@ test('open sessions keep their Taipei start date across days and close independe
   assert.notEqual(next.session.code,session.code);
   assert.equal(next.session.name,'武昌 2026/11/26');
 });
+
+test('ending requires a valid management password even after a session closes',() => {
+  const gas = createGas();
+  const {session} = startSession(gas,'none','武昌');
+  const end = {action:'endSession',code:session.code,endedBy:'小陳'};
+  assert.equal(gas.post(end).error,'管理密碼錯誤');
+  assert.equal(gas.post({...end,password:'wrong'}).error,'管理密碼錯誤');
+  assert.equal(gas.get({action:'session',code:session.code}).session.status,'進行中');
+  const closed = gas.post({...end,password:'test-admin'}).session;
+  assert.equal(closed.status,'已結束');
+  for (let i = 0; i < 5; i++) assert.equal(gas.post(end).error,'管理密碼錯誤');
+  assert.equal(gas.post({...end,password:'test-admin'}).error,'嘗試次數過多，請稍後再試');
+});
+
+for (const useCache of [true,false]) {
+  test('management password lockout is scoped to one session using '+(useCache ? 'cache' : 'properties'),() => {
+    const gas = createGas({useCache});
+    let now = Date.parse('2026-11-25T00:00:00Z');
+    gas.context.Date = class extends Date { static now() { return now; } };
+    const {session} = startSession(gas,'none','武昌');
+    const other = startSession(gas,'none','華山').session;
+    const end = {action:'endSession',code:session.code,endedBy:'小陳',password:'test-admin'};
+    for (let i = 0; i < 5; i++) {
+      assert.equal(gas.post({...end,password:'wrong'}).error,'管理密碼錯誤');
+    }
+    assert.equal(gas.post(end).error,'嘗試次數過多，請稍後再試');
+    assert.equal(gas.get({action:'openSession',store:'武昌'}).session.code,session.code);
+    assert.equal(gas.post({...end,code:other.code}).session.status,'已結束');
+    now += 599999;
+    assert.equal(gas.post(end).error,'嘗試次數過多，請稍後再試');
+    now += 1;
+    assert.equal(gas.post(end).session.status,'已結束');
+  });
+}
 
 test('legacy duplicate open sessions are closed in place, keeping the newest and historical rows',() => {
   const gas = createGas();

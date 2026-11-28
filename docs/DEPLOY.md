@@ -12,7 +12,7 @@
 
 「刷讀明細」欄位依序為 時間｜場次｜門市｜盤點人｜區域｜裝置｜條碼｜品名｜數量｜id｜更新時間｜狀態。區域為選填，未填時明細保留空白，依區域彙總則顯示「未填區域」。舊版明細會在執行 `setup()` 或收到第一個通過驗證的 API 請求時自動更新，保留既有盤點紀錄。
 
-盤點人員選好門市並按「開始盤點」後，系統會加入該門市進行中的場次，或以台北日期建立新場次。場次可持續跨日，直到有人按「結束盤點」。結束前會先嘗試上傳待同步明細。離線時再次確認結束，會在恢復連線後同步結束指令，未上傳明細仍可匯出本機備份。結束後可從「彙總」查看及匯出上一場。
+盤點人員選好門市並按「開始盤點」後，系統會加入該門市進行中的場次，或以台北日期建立新場次。場次可持續跨日，直到有人在「設定」按「結束盤點」並輸入管理密碼。結束前會先嘗試上傳待同步明細。離線時待上傳明細會留在本機，恢復連線後可重新輸入管理密碼。未上傳明細仍可匯出本機備份。結束後可從「彙總」查看及匯出上一場。
 
 建立有主檔的場次，或加入尚無主檔的有主檔場次時，可先匯入 POS 的 Excel／CSV，再按「開始盤點」。設定雲端後，主檔會自動上傳到該場次，加入者會自動載入。上傳失敗時會顯示「主檔待上傳」並自動重試。可在「彙總」重新載入主檔，或經確認後覆蓋場次主檔。匯入時若同一條碼出現多次，以最後一列為準。
 
@@ -30,7 +30,9 @@
 Apps Script 端可擇一設定金鑰。
 
 - 手動設定時，在 Apps Script「專案設定」的「指令碼屬性」新增 `API_KEY` 並填入金鑰。
-- 使用雜湊初始化時，將金鑰存入本機的 `secrets/api_key.txt`，依序執行 `node scripts/prepare-deploy.js` 和 `node scripts/make-config.js`。部署目錄 `deploy/` 包含 `Code.gs`、`appsscript.json` 和只含 SHA-256 雜湊的 `Config.gs`，本機的 `.clasp.json` 也放在此處。首次以正確金鑰呼叫 API 時，程式會寫入 `API_KEY` 指令碼屬性。已有該屬性時，以屬性中的金鑰為準。
+- 使用雜湊初始化時，將金鑰存入本機的 `secrets/api_key.txt`，依序執行 `node scripts/prepare-deploy.js` 和 `node scripts/make-config.js`。部署目錄 `deploy/` 包含 `Code.gs`、`appsscript.json` 和存放雜湊及管理密碼鹽值的 `Config.gs`，本機的 `.clasp.json` 也放在此處。首次以正確金鑰呼叫 API 時，程式會寫入 `API_KEY` 指令碼屬性。已有該屬性時，以屬性中的金鑰為準。
+
+執行 `node scripts/make-config.js`、`bash scripts/deploy-gas.sh` 或 `bash scripts/smoke-prod.sh` 前，請在環境中設定 `INVENTORY_ADMIN_PASSWORD`。管理密碼的部署設定只保存 SHA-256 雜湊和隨機鹽值。手動部署時，也需將產生的 `deploy/Config.gs` 加入 Apps Script 專案，才能驗證管理密碼。
 
 請勿將 `Config.gs` 或 `secrets/api_key.txt` 提交到版本控制。
 
@@ -52,6 +54,6 @@ Apps Script 端可擇一設定金鑰。
 
 ## 自動部署腳本（box 上）
 1. `clasp login`（buyer@ehobby.com.tw）。
-2. `bash scripts/deploy-gas.sh`：第一次會建立新試算表「條碼盤點紀錄」與綁定的 Apps Script，推送 Code.gs／appsscript.json／Config.gs（只含金鑰的 SHA-256，不含金鑰本身），建立網頁應用程式部署；之後再執行會更新同一個部署（網址不變）。網址等資訊寫在 `secrets/deploy_info.json`。
+2. `bash scripts/deploy-gas.sh`：第一次會建立新試算表「條碼盤點紀錄」與綁定的 Apps Script，推送 Code.gs／appsscript.json／Config.gs（包含 API 金鑰雜湊、管理密碼雜湊及鹽值），建立網頁應用程式部署；之後再執行會更新同一個部署（網址不變）。網址等資訊寫在 `secrets/deploy_info.json`。
 3. 第一次部署後，用 buyer 帳號開啟 Apps Script 編輯器，執行 `setup` 並同意授權（試算表權限）。
-4. `bash scripts/smoke-prod.sh`：用「測試門市」實測 ping、錯誤金鑰、建立／加入場次、上傳、重送不重複、彙總、結束場次、結束後拒絕寫入。
+4. `bash scripts/smoke-prod.sh`：用「測試門市」實測 ping、錯誤金鑰、建立／加入場次、上傳、重送不重複、彙總、結束場次、結束後拒絕寫入。測試只會使用新建的「測試門市」場次，並在結束前將測試明細標成已刪除。

@@ -7,6 +7,17 @@ const sizes = [
   {name:'Android',width:360,height:780,scale:3,file:'14-compact-android.png'}
 ];
 
+async function expectNoPageScroll(page) {
+  const viewport = await page.evaluate(async () => {
+    window.scrollTo(0,100);
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const root = document.documentElement;
+    return {y:window.scrollY,overflow:root.scrollHeight-root.clientHeight};
+  });
+  expect(viewport.y).toBe(0);
+  expect(viewport.overflow).toBeLessThanOrEqual(1);
+}
+
 async function insideViewport(locator,height) {
   await expect(locator).toBeVisible();
   const box = await locator.boundingBox();
@@ -37,6 +48,7 @@ for (const {name,width,height,scale,file} of sizes) {
       await expect(qty).toHaveValue(/^\d+$/);
       await expect(page.locator('#last-details')).toContainText('4904810049586');
       const measure = async () => {
+        await expectNoPageScroll(page);
         const viewport = await page.evaluate(() => ({height:window.innerHeight,y:window.scrollY}));
         expect(viewport).toEqual({height,y:0});
         for (const selector of ['#camera-panel','#video','#last-qty','#last-controls [data-adjust="-1"]',
@@ -69,6 +81,7 @@ for (const {name,width,height,scale,file} of sizes) {
 
       const dialog = page.getByRole('dialog');
       await expect(dialog).toContainText('UNKNOWN');
+      await expectNoPageScroll(page);
       await insideViewport(dialog,height);
       await dialog.getByRole('button',{name:'用品名搜尋'}).click();
       const query = dialog.getByRole('searchbox');

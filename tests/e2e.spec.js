@@ -29,21 +29,43 @@ test('camera dedupe, keyboard wedge, edits, deletion and persisted lines',async 
   await barcode.fill('ABC');
   await barcode.press('Enter');
   await expect(barcode).toBeFocused();
-  const line = page.locator('[data-barcode="ABC"]');
-  await expect(button(line,'3')).toBeVisible();
-  await button(line,'＋').click();
-  await expect(button(line,'4')).toBeVisible();
-  await button(line,'−').click();
-  await button(line,'3').click();
-  await line.getByLabel('編輯數量').fill('7');
-  await button(line,'儲存').click();
+  const card = page.locator('#last-scan');
+  const qty = card.locator('#last-qty');
+  await expect(card).toContainText('ABC');
+  await expect(qty).toHaveValue('3');
+  await button(card,'增加一件').click();
+  await expect(qty).toHaveValue('4');
+  await button(card,'減少一件').click();
+  await expect(qty).toHaveValue('3');
+  await qty.fill('7');
+  await button(card,'確定，繼續掃描').click();
+  await expect(qty).toHaveValue('7');
+
   await scan(page,'DELETE');
-  page.once('dialog',dialog => dialog.accept());
-  await button(page.locator('[data-barcode="DELETE"]'),'−').click();
-  await expect(page.locator('#scan-totals')).toHaveText('品項數 1 ／ 總件數 7');
+  await expect(card).toContainText('DELETE');
+  await expect(qty).toHaveValue('1');
+  await qty.fill('0');
+  const [message] = await Promise.all([
+    page.waitForEvent('dialog').then(async dialog => {
+      await dialog.accept();
+      return dialog.message();
+    }),
+    qty.press('Enter')
+  ]);
+  expect(message).toBe('確定刪除此筆刷讀明細？');
+  await expect(card).toBeHidden();
+
   await page.reload();
-  await expect(button(line,'7')).toBeVisible();
-  await expect(page.locator('[data-barcode="DELETE"]')).toHaveCount(0);
+  await expect(page.locator('#scan')).toBeVisible();
+  await summary(page);
+  await expect(itemRow(page,'ABC').locator('td').nth(3)).toHaveText('7');
+  await expect(itemRow(page,'DELETE')).toHaveCount(0);
+  const lines = await page.evaluate(() => InventoryApp.getState().lines);
+  expect(lines).toHaveLength(2);
+  expect(lines).toEqual(expect.arrayContaining([
+    expect.objectContaining({barcode:'ABC',qty:7,deleted:false}),
+    expect.objectContaining({barcode:'DELETE',qty:0,deleted:true})
+  ]));
 });
 
 test('offline queue, HTTP failure retries and idempotent sync without preflight',async ({page,context,server}) => {
@@ -223,9 +245,14 @@ test('optional zone changes apply only to subsequent scans and persist on the st
   await zoneDialog.locator('#scan-zone').fill('B-02');
   await zoneDialog.getByRole('button',{name:'確定',exact:true}).click();
   await scan(page,'000123','camera');
-  await expect(page.locator('#lines li')).toHaveCount(2);
-  await expect(page.locator('#lines li').first()).toContainText('B-02');
-  await expect(page.locator('#lines li').last()).toContainText('A-01');
+  await expect(chip).toHaveText('區域：B-02');
+  await expect(page.locator('#last-scan')).toContainText('B-02');
+  await expect(page.locator('#last-qty')).toHaveValue('1');
+  await summary(page);
+  const zones = page.locator('#summary-groups .panel').filter({has:page.getByRole('heading',{name:'依區域'})});
+  await expect(zones.locator('tbody tr')).toHaveCount(2);
+  for (const zone of ['A-01','B-02']) await expect(zones.getByRole('cell',{name:zone,exact:true})).toBeVisible();
+  await button(page,'刷讀').click();
   await chip.click();
   await zoneDialog.locator('#scan-zone').fill('取消的區域');
   await zoneDialog.getByRole('button',{name:'取消'}).click();
@@ -240,7 +267,6 @@ test('optional zone changes apply only to subsequent scans and persist on the st
   expect(cloud.details.map(line => line.zone).sort()).toEqual(['','A-01','B-02']);
   await summary(page);
   await button(page,'重新整理').click();
-  const zones = page.locator('#summary-groups .panel').filter({has:page.getByRole('heading',{name:'依區域'})});
   await expect(zones.locator('tbody tr')).toHaveCount(3);
   for (const zone of ['A-01','B-02','未填區域']) await expect(zones.getByRole('cell',{name:zone,exact:true})).toBeVisible();
 
@@ -316,6 +342,16 @@ test('camera starts with a fake camera or displays a readable error',async ({pag
   expect(errors).toEqual([]);
 });
 
+async function endSession(page,password = 'test-admin') {
+  await button(page,'設定').click();
+  await button(page,'結束盤點').click();
+  const dialog = page.getByRole('dialog',{name:'結束盤點'});
+  await expect(dialog.locator('#end-session-name')).toHaveText((await active(page)).name);
+  await dialog.getByLabel('管理密碼').fill(password);
+  await dialog.getByRole('button',{name:'確定',exact:true}).click();
+  await expect(page.locator('#admin-password')).toHaveValue('');
+}
+
 test('ending flushes data, preserves summary and starts a new session under a new code',async ({page,server}) => {
   await open(page,server);
   await configure(page,server);
@@ -325,12 +361,12 @@ test('ending flushes data, preserves summary and starts a new session under a ne
   const previous = await active(page);
   expect(previous.name).toBe('武昌 2026/11/25');
   await setServerDate(25);
-  const dialogs = [];
-  page.on('dialog',dialog => { dialogs.push(dialog.message()); return dialog.accept(); });
   await scan(page,'FINAL','manual',4);
-  await button(page,'結束盤點').click();
+  await endSession(page,'wrong');
+  await expect(page.locator('#toast')).toHaveText('管理密碼錯誤');
+  expect((await active(page)).code).toBe(previous.code);
+  await endSession(page);
   await expect(page.locator('#start')).toBeVisible();
-  expect(dialogs).toEqual(['確定結束『'+previous.name+'』盤點？結束後無法再刷讀，下次選此門市會開新場次']);
   expect(await active(page)).toBeNull();
   await summary(page);
   await button(page,'重新整理').click();
@@ -358,8 +394,7 @@ test('another device ending a session rejects offline lines and exposes a persis
     await context.setOffline(true);
     await scan(page,'LATE','manual',3);
     await queue(page,1);
-    second.on('dialog',dialog => dialog.accept());
-    await button(second,'結束盤點').click();
+    await endSession(second);
     await expect(second.locator('#start')).toBeVisible();
     await context.setOffline(false);
     await expect(page.locator('#toast')).toHaveText('場次已結束，1 筆未上傳');
@@ -375,7 +410,7 @@ test('another device ending a session rejects offline lines and exposes a persis
   } finally { await secondContext.close(); }
 });
 
-test('offline start uses a cached session and confirmed offline ending syncs after reconnect',async ({page,context,server}) => {
+test('offline start uses a cached session and ending requires reconnection and preserves offline scans',async ({page,context,server}) => {
   await open(page,server);
   await configure(page,server);
   await begin(page);
@@ -389,20 +424,18 @@ test('offline start uses a cached session and confirmed offline ending syncs aft
   await begin(page,{store:'萬年總店'});
   expect((await active(page)).code).toBe(code);
   await scan(page,'OFFLINE-END');
-  const confirmations = [];
-  page.on('dialog',dialog => {
-    confirmations.push(dialog.message());
-    return confirmations.length === 2 ? dialog.dismiss() : dialog.accept();
-  });
+  await button(page,'設定').click();
   await button(page,'結束盤點').click();
-  await expect(page.locator('#end-session')).toBeEnabled();
-  await expect(page.locator('#scan')).toBeVisible();
+  await expect(page.locator('#toast')).toHaveText('請恢復連線後再輸入管理密碼，以結束盤點');
+  await expect(page.locator('#end-overlay')).toBeHidden();
   await queue(page,1);
-  await button(page,'結束盤點').click();
-  await expect(page.locator('#sync-status')).toContainText('結束盤點待同步');
-  expect(confirmations).toHaveLength(4);
+  const offlineLines = await page.evaluate(() => InventoryApp.getState().lines);
+  expect(offlineLines).toMatchObject([{barcode:'OFFLINE-END',dirty:true}]);
+  expect((await active(page)).code).toBe(code);
   await context.setOffline(false);
-  await expect(page.locator('#sync-status')).not.toContainText('結束盤點待同步');
+  await queue(page,0);
+  await endSession(page);
+  await expect(page.locator('#start')).toBeVisible();
   const get = await fetch(server.apiUrl+'?action=session&key=test-key&code='+code).then(response => response.json());
   expect(get.session.status).toBe('已結束');
 });
@@ -428,7 +461,7 @@ test('a later participant supplies the missing master for an open session',async
   } finally { await context.close(); }
 });
 
-test('local-only sessions reopen by store and remain exportable after ending',async ({page,server}) => {
+test('local-only sessions reopen by store and remain exportable when ending is unavailable',async ({page,server}) => {
   await open(page,server);
   await begin(page,{store:'大江'});
   const previous = await active(page);
@@ -437,16 +470,13 @@ test('local-only sessions reopen by store and remain exportable after ending',as
   await expect(page.locator('#session-info')).toContainText('將加入進行中場次：'+previous.name);
   await begin(page);
   expect((await active(page)).code).toBe(previous.code);
-  page.once('dialog',dialog => dialog.accept());
+  await button(page,'設定').click();
   await button(page,'結束盤點').click();
-  await expect(page.locator('#start')).toBeVisible();
+  await expect(page.locator('#toast')).toHaveText('此場次僅存於本機，無法連線驗證管理密碼');
   await page.reload();
-  await expect(page.locator('#session-info')).toContainText('將建立新場次');
+  expect((await active(page)).code).toBe(previous.code);
   await summary(page);
   await expect(itemRow(page,'LOCAL')).toContainText('2');
-  await button(page,'設定開始').click();
-  await begin(page);
-  expect((await active(page)).code).not.toBe(previous.code);
 });
 
 test('two devices pressing 開始盤點 at the same time for one store share a single open session',async ({page,browser,server}) => {
@@ -493,7 +523,7 @@ test('POS BIFF8 import reports exceptions and counts under the selected master c
   await manual('POSSINGLE');
   await expect(page.locator('#last-scan')).toContainText('測試商品06');
   await expect(page.locator('#last-scan')).toContainText('對應到 POSSINGLE-SMP');
-  await expect(page.locator('#lines [data-barcode="POSSINGLE-SMP"]')).toHaveCount(1);
+  await expect(page.locator('#last-qty')).toHaveValue('1');
   await manual('POSMULTI');
   const picker = page.getByRole('dialog',{name:'選擇主檔商品'});
   await expect(picker.getByRole('button',{name:/POSMULTI-SMP.*帳面 7/})).toBeVisible();
@@ -502,15 +532,18 @@ test('POS BIFF8 import reports exceptions and counts under the selected master c
   expect(await page.evaluate(() => InventoryApp.getState().scannerPaused)).toBe(true);
   await picker.getByRole('button',{name:/POSMULTI-B/}).click();
   await expect(picker).toBeHidden();
-  await expect(page.locator('#lines [data-barcode="POSMULTI-B"]')).toHaveCount(1);
+  await expect(page.locator('#last-scan')).toContainText('POSMULTI-B');
+  await expect(page.locator('#last-qty')).toHaveValue('1');
   await manual('POSBASE');
   await expect(picker.getByRole('button',{name:/POSBASE ／ 帳面 9/})).toBeVisible();
   await expect(picker.getByRole('button',{name:/POSBASE-SMP/})).toBeVisible();
   await picker.getByRole('button',{name:'取消',exact:true}).click();
-  await expect(page.locator('#lines li')).toHaveCount(2);
+  expect(await page.evaluate(() => InventoryApp.getState().lines.map(line => line.barcode).sort()))
+    .toEqual(['POSMULTI-B','POSSINGLE-SMP']);
   await manual('POSMULTI');
   await picker.getByRole('button',{name:'直接計入原條碼'}).click();
-  await expect(page.locator('#lines [data-barcode="POSMULTI"]')).toHaveCount(1);
+  await expect(page.locator('#last-scan')).toContainText('POSMULTI');
+  await expect(page.locator('#last-qty')).toHaveValue('1');
   await queue(page,0);
   await summary(page);
   await button(page,'重新整理').click();
